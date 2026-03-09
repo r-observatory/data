@@ -103,7 +103,8 @@ for (db_file in source_dbs) {
         dbExecute(con, create_sql)
 
         # Get column list from source table for INSERT
-        cols <- dbListFields(con, paste0("src.", tbl_name))
+        col_info <- dbGetQuery(con, sprintf('PRAGMA src.table_info("%s")', tbl_name))
+        cols <- col_info$name
         cols_str <- paste(sprintf('"%s"', cols), collapse = ", ")
 
         # Copy data
