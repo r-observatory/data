@@ -1,0 +1,5 @@
+*.db
+release_notes.md
+sources/
+.Rhistory
+.RData

@@ -1,0 +1,99 @@
+name: Merge Observatory Databases
+
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: observatory-merge
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "release"
+
+      - name: Install RSQLite
+        run: |
+          Rscript -e 'install.packages("RSQLite", repos = "https://cloud.r-project.org")'
+
+      - name: Download pipeline databases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p sources
+
+          declare -A repo_db_map
+          repo_db_map[cran-queue]=queue.db
+          repo_db_map[cran-feed]=feed.db
+          repo_db_map[cran-downloads]=downloads.db
+          repo_db_map[cran-metadata]=metadata.db
+
+          for repo in cran-queue cran-feed cran-downloads cran-metadata; do
+            target="${repo_db_map[$repo]}"
+            echo "--- Downloading from r-observatory/$repo ---"
+
+            # Create a temp directory for this download
+            tmpdir=$(mktemp -d)
+
+            if gh release download --repo "r-observatory/$repo" \
+                 --pattern "*.db" --dir "$tmpdir" 2>/dev/null; then
+              # Find the downloaded .db file and rename to expected name
+              downloaded=$(find "$tmpdir" -name "*.db" -type f | head -1)
+              if [ -n "$downloaded" ]; then
+                mv "$downloaded" "sources/$target"
+                echo "  -> sources/$target ($(stat --format=%s "sources/$target") bytes)"
+              else
+                echo "  Warning: No .db file found in release for $repo"
+              fi
+            else
+              echo "  Warning: Could not download release from r-observatory/$repo"
+            fi
+
+            rm -rf "$tmpdir"
+          done
+
+          echo ""
+          echo "Downloaded databases:"
+          ls -lh sources/ || echo "  (none)"
+
+      - name: Run merge
+        run: |
+          Rscript scripts/merge.R sources observatory.db
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$(date -u +%Y-%m-%d)"
+
+          # Delete existing release/tag for today if re-running
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git push --delete origin "$TAG" 2>/dev/null || true
+
+          gh release create "$TAG" \
+            observatory.db \
+            --title "Observatory DB — $(date -u +%Y-%m-%d)" \
+            --notes-file release_notes.md \
+            --latest
+
+      - name: Trigger viewer deploy
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.VIEWER_DEPLOY_TOKEN }}
+        run: |
+          gh api repos/coatless/r-packages-viewer/dispatches \
+            -f event_type=data-updated
