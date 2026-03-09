@@ -74,7 +74,7 @@ for (db_file in source_dbs) {
 
   tryCatch({
     # Attach source database
-    dbExecute(con, sprintf("ATTACH DATABASE '%s' AS src", src_path))
+    dbExecute(con, "ATTACH DATABASE ? AS src", params = list(src_path))
 
     # Get list of tables from source
     tables <- dbGetQuery(con,
@@ -175,6 +175,14 @@ for (db_file in source_dbs) {
   cat("\n")
 }
 
+merged_count <- sum(vapply(merge_stats, function(s) {
+  !is.null(s) && identical(s$status, "merged")
+}, logical(1)))
+if (merged_count == 0) {
+  stop("No source databases were successfully merged. Aborting.")
+}
+cat(sprintf("\n%d of %d sources merged successfully\n\n", merged_count, length(source_dbs)))
+
 # ---------------------------------------------------------------------------
 # Build FTS5 search index on packages table
 # ---------------------------------------------------------------------------
@@ -187,8 +195,9 @@ tryCatch({
   )$n > 0
 
   if (has_packages) {
+    dbExecute(con, "DROP TABLE IF EXISTS packages_fts")
     dbExecute(con, "
-      CREATE VIRTUAL TABLE IF NOT EXISTS packages_fts USING fts5(
+      CREATE VIRTUAL TABLE packages_fts USING fts5(
         name, title, description, maintainer,
         content='packages',
         content_rowid='rowid',
@@ -217,8 +226,10 @@ cat("\n")
 # ---------------------------------------------------------------------------
 # Enrich packages with URL/bug_reports from packages_enrichment
 # ---------------------------------------------------------------------------
-cat("--- Enriching packages ---\n")
+dbExecute(con, "BEGIN TRANSACTION")
 tryCatch({
+
+cat("--- Enriching packages ---\n")
   has_enrichment <- dbGetQuery(con,
     "SELECT COUNT(*) AS n FROM sqlite_master
      WHERE type = 'table' AND name = 'packages_enrichment'"
@@ -232,19 +243,18 @@ tryCatch({
   if (has_enrichment && has_packages) {
     n_updated <- dbExecute(con, "
       UPDATE packages SET
-        cran_url = COALESCE(
-          (SELECT url FROM packages_enrichment
-           WHERE packages_enrichment.name = packages.name),
-          packages.cran_url
-        )
+        cran_url = (SELECT url FROM packages_enrichment
+                    WHERE packages_enrichment.name = packages.name)
+      WHERE EXISTS (
+        SELECT 1 FROM packages_enrichment
+        WHERE packages_enrichment.name = packages.name
+        AND url IS NOT NULL AND url != ''
+      )
     ")
     cat("  Updated cran_url for", n_updated, "packages\n")
   } else {
     cat("  Skipped: required tables not found\n")
   }
-}, error = function(e) {
-  warning("Package enrichment failed: ", conditionMessage(e))
-})
 
 cat("\n")
 
@@ -252,7 +262,6 @@ cat("\n")
 # Enrich package_versions with removal_reasons
 # ---------------------------------------------------------------------------
 cat("--- Enriching package_versions with removal reasons ---\n")
-tryCatch({
   has_versions <- dbGetQuery(con,
     "SELECT COUNT(*) AS n FROM sqlite_master
      WHERE type = 'table' AND name = 'package_versions'"
@@ -281,11 +290,17 @@ tryCatch({
   } else {
     cat("  Skipped: required tables not found\n")
   }
+
+  dbExecute(con, "COMMIT")
 }, error = function(e) {
-  warning("Removal reason enrichment failed: ", conditionMessage(e))
+  tryCatch(dbExecute(con, "ROLLBACK"), error = function(e2) NULL)
+  warning("Enrichment failed: ", conditionMessage(e))
 })
 
 cat("\n")
+
+cat("--- Running ANALYZE ---\n")
+dbExecute(con, "ANALYZE")
 
 # ---------------------------------------------------------------------------
 # Write release_notes.md
