@@ -70,6 +70,20 @@ jobs:
           echo "Downloaded databases:"
           ls -lh sources/ || echo "  (none)"
 
+          # Validate downloaded databases
+          echo ""
+          echo "Validating databases..."
+          for db in sources/*.db; do
+            if [ -f "$db" ]; then
+              if sqlite3 "$db" "PRAGMA integrity_check" 2>/dev/null | grep -q "^ok$"; then
+                echo "  $(basename $db): OK"
+              else
+                echo "  $(basename $db): FAILED integrity check, removing"
+                rm -f "$db"
+              fi
+            fi
+          done
+
       - name: Run merge
         run: |
           Rscript scripts/merge.R sources observatory.db
