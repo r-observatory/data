@@ -58,10 +58,10 @@ dbGetQuery(con, "
 
 ```r
 dbGetQuery(con, "
-  SELECT p.name, p.title, p.version, d.total_downloads
+  SELECT p.name, p.title, d.total_30d, d.rank_30d
   FROM packages p
-  LEFT JOIN downloads d ON p.name = d.package
-  WHERE p.name = 'ggplot2'
+  LEFT JOIN downloads_summary d ON p.name = d.package
+  ORDER BY d.total_30d DESC LIMIT 20
 ")
 ```
 
@@ -81,10 +81,9 @@ dbGetQuery(con, "
 
 ```r
 dbGetQuery(con, "
-  SELECT title, pub_date, category
-  FROM feed_items
-  ORDER BY pub_date DESC
-  LIMIT 20
+  SELECT package, version, event_type, detected_at
+  FROM package_versions
+  ORDER BY detected_at DESC LIMIT 20
 ")
 ```
 
@@ -92,35 +91,40 @@ dbGetQuery(con, "
 
 | Source | Repository | Schedule | Description |
 |--------|-----------|----------|-------------|
-| `feed.db` | [r-observatory/cran-feed](https://github.com/r-observatory/cran-feed) | Every 6 hours | CRAN RSS feed events (new, updated, removed packages) |
-| `metadata.db` | [r-observatory/cran-metadata](https://github.com/r-observatory/cran-metadata) | Daily at 06:00 UTC | Package metadata, descriptions, maintainers, URLs |
+| `feed.db` | [r-observatory/cran-feed](https://github.com/r-observatory/cran-feed) | Every 6 hours | Package additions, updates, removals, reverse dependencies |
+| `metadata.db` | [r-observatory/cran-metadata](https://github.com/r-observatory/cran-metadata) | Daily at 06:00 UTC | Check results, authors, enrichment, check status history |
 | `downloads.db` | [r-observatory/cran-downloads](https://github.com/r-observatory/cran-downloads) | Daily at 07:00 UTC | Download counts from CRAN logs |
-| `queue.db` | [r-observatory/cran-queue](https://github.com/r-observatory/cran-queue) | Every 6 hours | CRAN incoming/outgoing queue snapshots |
+| `queue.db` | [r-observatory/cran-queue](https://github.com/r-observatory/cran-queue) | Every 2 hours | CRAN incoming queue snapshots |
 
 ## Combined Schema
 
 ### From `feed.db` (cran-feed)
 
-- **feed_items** — Individual RSS feed entries (new packages, updates, removals)
-- **package_versions** — Version history derived from feed events
-- **removal_reasons** — Reasons for package removal from CRAN
+- **packages** — Current CRAN packages (name, version, title, description, maintainer, license, depends, imports, suggests, published, etc.)
+- **package_versions** — Append-only version history (package, version, event_type, previous_version, removal_reason, detected_at)
+- **reverse_dependencies** — Reverse dependency relationships (package, rev_package, type)
 
 ### From `metadata.db` (cran-metadata)
 
-- **packages** — Current CRAN package metadata (name, title, description, version, maintainer, license, etc.)
-- **packages_enrichment** — Supplementary URL and bug report data
+- **cran_check_results** — CRAN check results per package and flavor (package, flavor, status, tinstall, tcheck, ttotal)
+- **cran_check_details** — Detailed check output (package, flavor, check_name, status, output)
+- **cran_check_issues** — Packages with check issues (package, version, kind, href)
+- **authors** — CRAN author database (package, given, family, email, role, orcid)
+- **packages_enrichment** — URL and bug report links (name, url, bug_reports)
+- **check_status_history** — Append-only status change log (package, status, flavor_summary, details, detected_at)
+- **removal_reasons** — Archival reasons for removed packages (package, reason)
+- **package_news** — NEWS entries for recently-updated packages (package, version, news_text)
 
 ### From `downloads.db` (cran-downloads)
 
-- **downloads** — Daily and total download counts per package
+- **downloads_daily** — Daily download counts per package (package, date, count)
+- **downloads_summary** — Computed download stats (package, total_30d, total_90d, total_365d, rank_30d, rank_90d, rank_365d, avg_daily_30d, trend)
 
 ### From `queue.db` (cran-queue)
 
-- **queue_snapshots** — Point-in-time snapshots of the CRAN incoming queue
-- **queue_history** — Package lifecycle through queue folders (pretest, inspect, etc.)
+- **queue_snapshots** — Point-in-time snapshots of CRAN incoming queue (snapshot_time, package, version, folder, howlong)
+- **queue_stats** — Monthly queue statistics by folder (month, folder, median_hours, p80_hours, p95_hours, total_packages)
 
 ### Generated at merge time
 
 - **packages_fts** — FTS5 full-text search index over `packages` (name, title, description, maintainer). Uses porter stemming and unicode61 tokenization.
-
-> **Note:** The `packages_fts` table is a virtual table generated during the merge process. It enables fast full-text search across package metadata.
