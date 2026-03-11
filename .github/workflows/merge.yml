@@ -109,5 +109,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.VIEWER_DEPLOY_TOKEN }}
         run: |
-          gh api repos/coatless/r-packages-viewer/dispatches \
+          gh api repos/r-observatory/viewer/dispatches \
             -f event_type=data-updated
