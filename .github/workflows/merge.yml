@@ -21,14 +21,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup R
-        uses: r-lib/actions/setup-r@v2
+      - uses: r-lib/actions/setup-r@v2
         with:
           r-version: "release"
+          use-public-rspm: true
 
-      - name: Install RSQLite
-        run: |
-          Rscript -e 'install.packages("RSQLite", repos = "https://cloud.r-project.org")'
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::RSQLite
+            any::jsonlite
+            any::testthat
+            any::DBI
 
       - name: Download pipeline databases
         env:
@@ -39,7 +43,7 @@ jobs:
           declare -A repo_db_map
           repo_db_map[cran-queue]=queue.db
           repo_db_map[cran-feed]=feed.db
-          repo_db_map[cran-downloads]=downloads.db
+          repo_db_map[cran-downloads]=downloads-summary.db
           repo_db_map[cran-metadata]=metadata.db
 
           for repo in cran-queue cran-feed cran-downloads cran-metadata; do
@@ -49,8 +53,21 @@ jobs:
             # Create a temp directory for this download
             tmpdir=$(mktemp -d)
 
-            if gh release download --repo "r-observatory/$repo" \
-                 --pattern "*.db" --dir "$tmpdir" 2>/dev/null; then
+            # cran-downloads moved to a rolling "current" tag with sharded assets;
+            # we only want the small downloads-summary.db.
+            if [ "$repo" = "cran-downloads" ]; then
+              download_cmd=(gh release download current
+                            --repo "r-observatory/$repo"
+                            --pattern "downloads-summary.db"
+                            --dir "$tmpdir")
+            else
+              download_cmd=(gh release download
+                            --repo "r-observatory/$repo"
+                            --pattern "*.db"
+                            --dir "$tmpdir")
+            fi
+
+            if "${download_cmd[@]}" 2>/dev/null; then
               # Find the downloaded .db file and rename to expected name
               downloaded=$(find "$tmpdir" -name "*.db" -type f | head -1)
               if [ -n "$downloaded" ]; then
@@ -83,6 +100,9 @@ jobs:
               fi
             fi
           done
+
+      - name: Run unit tests
+        run: Rscript scripts/tests/testthat.R
 
       - name: Run merge
         run: |
