@@ -12,6 +12,17 @@ library(RSQLite)
 
 options(timeout = 60)
 
+# Resolve script directory robustly (Rscript --file=... vs source()).
+merge_script_dir <- tryCatch(
+  dirname(sys.frame(1)$ofile),
+  error = function(e) {
+    args <- commandArgs(trailingOnly = FALSE)
+    f    <- sub("--file=", "", grep("--file=", args, value = TRUE))
+    if (length(f) == 1L && nzchar(f)) dirname(f) else "scripts"
+  }
+)
+source(file.path(merge_script_dir, "merge_helpers.R"))
+
 # ---------------------------------------------------------------------------
 # CLI arguments
 # ---------------------------------------------------------------------------
@@ -24,13 +35,22 @@ cat("Sources directory:", sources_dir, "\n")
 cat("Output path:      ", output_path, "\n\n")
 
 # ---------------------------------------------------------------------------
-# Source databases to merge (in order)
+# Source databases to merge, in order.
+# source_tables: NULL means "merge all tables"; a character vector means
+# "merge only these tables".
 # ---------------------------------------------------------------------------
 source_dbs <- c(
   "feed.db",
   "metadata.db",
-  "downloads.db",
+  "downloads-summary.db",
   "queue.db"
+)
+
+source_tables <- list(
+  "feed.db"              = NULL,
+  "metadata.db"          = NULL,
+  "downloads-summary.db" = c("downloads_summary"),
+  "queue.db"             = NULL
 )
 
 # ---------------------------------------------------------------------------
@@ -81,6 +101,13 @@ for (db_file in source_dbs) {
       "SELECT name, sql FROM src.sqlite_master
        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
     )
+
+    # Apply per-source allowlist (NULL means "all tables").
+    allow <- tables_to_merge_from(db_file, source_tables)
+    if (!is.null(allow)) {
+      tables <- tables[tables$name %in% allow, , drop = FALSE]
+      cat("  Allowlist: copying only [", paste(allow, collapse = ", "), "]\n")
+    }
 
     table_stats <- list()
 
