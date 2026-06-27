@@ -27,3 +27,11 @@ test_that("preserves multi-table allowlists", {
     c("t1", "t2", "t3")
   )
 })
+
+test_that("r2u-summary.db ingests only the r2u_downloads_summary table", {
+  config <- list("r2u-summary.db" = c("r2u_downloads_summary"))
+  expect_equal(
+    tables_to_merge_from("r2u-summary.db", config),
+    c("r2u_downloads_summary")
+  )
+})
