@@ -44,15 +44,19 @@ source_dbs <- c(
   "metadata.db",
   "downloads-summary.db",
   "r2u-summary.db",
+  "autoobs-downloads-summary.db",
+  "copr-downloads-summary.db",
   "queue.db"
 )
 
 source_tables <- list(
-  "feed.db"              = NULL,
-  "metadata.db"          = NULL,
-  "downloads-summary.db" = c("downloads_summary"),
-  "r2u-summary.db"       = c("r2u_downloads_summary"),
-  "queue.db"             = NULL
+  "feed.db"                      = NULL,
+  "metadata.db"                  = NULL,
+  "downloads-summary.db"         = c("downloads_summary"),
+  "r2u-summary.db"               = c("r2u_downloads_summary"),
+  "autoobs-downloads-summary.db" = c("autoobs_downloads_summary"),
+  "copr-downloads-summary.db"    = c("copr_downloads_summary"),
+  "queue.db"                     = NULL
 )
 
 # ---------------------------------------------------------------------------
