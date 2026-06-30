@@ -27,6 +27,10 @@ pipeline_config <- function() {
     list(name = "r2u-downloads",  repo = "r-observatory/r2u-downloads",
          schedule = "daily 06:00 UTC", max_age_h = 35L * 24L, rolling = TRUE, manifest = TRUE,
          upstream = "eddelbuettel/r2u-logs"),
+    list(name = "autoobs-downloads", repo = "r-observatory/autoobs-downloads",
+         schedule = "daily 04:00 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE),
+    list(name = "copr-downloads", repo = "r-observatory/copr-downloads",
+         schedule = "daily 05:30 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE),
     list(name = "data",           repo = "r-observatory/data",
          schedule = "daily 08:00 UTC", max_age_h = 30L,   rolling = FALSE, manifest = FALSE,
          self = TRUE)

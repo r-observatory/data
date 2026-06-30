@@ -35,3 +35,19 @@ test_that("r2u-summary.db ingests only the r2u_downloads_summary table", {
     c("r2u_downloads_summary")
   )
 })
+
+test_that("autoobs-downloads-summary.db ingests only the autoobs_downloads_summary table", {
+  config <- list("autoobs-downloads-summary.db" = c("autoobs_downloads_summary"))
+  expect_equal(
+    tables_to_merge_from("autoobs-downloads-summary.db", config),
+    c("autoobs_downloads_summary")
+  )
+})
+
+test_that("copr-downloads-summary.db ingests only the copr_downloads_summary table", {
+  config <- list("copr-downloads-summary.db" = c("copr_downloads_summary"))
+  expect_equal(
+    tables_to_merge_from("copr-downloads-summary.db", config),
+    c("copr_downloads_summary")
+  )
+})

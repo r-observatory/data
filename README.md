@@ -94,6 +94,8 @@ dbGetQuery(con, "
 | `feed.db` | [r-observatory/cran-feed](https://github.com/r-observatory/cran-feed) | Every 6 hours | Package additions, updates, removals, reverse dependencies |
 | `metadata.db` | [r-observatory/cran-metadata](https://github.com/r-observatory/cran-metadata) | Daily at 06:00 UTC | Check results, authors, enrichment, check status history |
 | `downloads.db` | [r-observatory/cran-downloads](https://github.com/r-observatory/cran-downloads) | Daily at 07:00 UTC | Download counts from CRAN logs |
+| `autoobs-downloads-summary.db` | [r-observatory/autoobs-downloads](https://github.com/r-observatory/autoobs-downloads) | Daily at 04:00 UTC | Per-package download counts for openSUSE OBS autoCRAN (via MirrorCache) |
+| `copr-downloads-summary.db` | [r-observatory/copr-downloads](https://github.com/r-observatory/copr-downloads) | Daily at 05:30 UTC | Per-chroot download counts for the Fedora COPR iucar/cran project |
 | `queue.db` | [r-observatory/cran-queue](https://github.com/r-observatory/cran-queue) | Every 2 hours | CRAN incoming queue snapshots |
 
 ## Combined Schema
@@ -119,6 +121,14 @@ dbGetQuery(con, "
 
 - **downloads_daily** — Daily download counts per package (package, date, count)
 - **downloads_summary** — Computed download stats (package, total_30d, total_90d, total_365d, rank_30d, rank_90d, rank_365d, avg_daily_30d, trend)
+
+### From `autoobs-downloads-summary.db` (autoobs-downloads)
+
+- **autoobs_downloads_summary** — Per-package openSUSE autoCRAN download stats (package, package_lower, id, total_1d, total_7d, total_30d, cnt_total, avg_daily_30d, rank_30d, rank_total, trend, autocran_only, first_seen, last_snapshot). `autocran_only = 1` marks names served only by autoCRAN (the count is exact); `0` means the name is also shipped elsewhere on openSUSE, so the name-aggregated count is a superset.
+
+### From `copr-downloads-summary.db` (copr-downloads)
+
+- **copr_downloads_summary** — Per-chroot RPM download stats for the Fedora COPR iucar/cran project (chroot, release, arch, rpms_total, dl_7d, dl_30d, dl_90d, avg_daily_30d, rank_30d, trend, first_date, last_date). Keyed by chroot (Fedora release plus architecture), not by package: COPR exposes no per-package counts.
 
 ### From `queue.db` (cran-queue)
 
