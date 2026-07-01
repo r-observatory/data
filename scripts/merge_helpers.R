@@ -4,23 +4,6 @@
 # sourced directly in tests (pipeline_metadata.R is not loaded in that context).
 `%||%` <- function(a, b) if (is.null(a)) b else a
 
-#' Turn an available.packages() matrix into bioc_packages registry rows.
-#' Uses the matrix rownames as the canonical package name (available.packages
-#' keys rows by Package), the Version column for version, and the supplied
-#' category. Returns a data.frame with a stable column order even when empty.
-bioc_rows_from_available <- function(mat, category) {
-  nm  <- rownames(mat)
-  if (is.null(nm)) nm <- character(0)
-  ver <- if ("Version" %in% colnames(mat)) unname(mat[, "Version"]) else rep(NA_character_, length(nm))
-  data.frame(
-    name       = as.character(nm),
-    name_lower = tolower(as.character(nm)),
-    version    = as.character(ver),
-    category   = rep(category, length(nm)),
-    stringsAsFactors = FALSE
-  )
-}
-
 #' Rows for copr_packages from the COPR api_3/monitor payload. Keeps only
 #' R-CRAN-<pkg> entries (the CRAN packages built in iucar/cran) and strips the
 #' prefix to the CRAN package name. Stable 2-column data.frame even when empty.

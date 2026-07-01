@@ -48,8 +48,9 @@ jobs:
           repo_db_map[r2u-downloads]=r2u-summary.db
           repo_db_map[autoobs-downloads]=autoobs-downloads-summary.db
           repo_db_map[copr-downloads]=copr-downloads-summary.db
+          repo_db_map[bioconductor-metadata]=bioconductor-metadata.db
 
-          for repo in cran-queue cran-feed cran-downloads cran-metadata r2u-downloads autoobs-downloads copr-downloads; do
+          for repo in cran-queue cran-feed cran-downloads cran-metadata r2u-downloads autoobs-downloads copr-downloads bioconductor-metadata; do
             target="${repo_db_map[$repo]}"
             echo "--- Downloading from r-observatory/$repo ---"
 
@@ -59,7 +60,7 @@ jobs:
             # cran-downloads and r2u-downloads use a rolling "current" tag with
             # sharded assets; we only want their small summary DB ($target).
             case "$repo" in
-              cran-downloads|r2u-downloads|autoobs-downloads|copr-downloads)
+              cran-downloads|r2u-downloads|autoobs-downloads|copr-downloads|bioconductor-metadata)
                 download_cmd=(gh release download current
                               --repo "r-observatory/$repo"
                               --pattern "$target"
