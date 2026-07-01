@@ -58,7 +58,7 @@ source_tables <- list(
   "autoobs-downloads-summary.db" = c("autoobs_downloads_summary"),
   "copr-downloads-summary.db"    = c("copr_downloads_summary"),
   "queue.db"                     = NULL,
-  "bioconductor-metadata.db"     = c("bioc_packages", "bioc_authors")
+  "bioconductor-metadata.db"     = c("bioc_packages", "bioc_authors", "bioc_releases")
 )
 
 # ---------------------------------------------------------------------------
