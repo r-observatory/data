@@ -299,6 +299,48 @@ tryCatch({
 cat("\n")
 
 # ---------------------------------------------------------------------------
+# Build the Fedora COPR availability registry (copr_packages)
+# ---------------------------------------------------------------------------
+cat("--- Building COPR registry ---\n")
+tryCatch({
+  mon <- jsonlite::fromJSON(
+    "https://copr.fedorainfracloud.org/api_3/monitor?ownername=iucar&projectname=cran",
+    simplifyVector = FALSE)
+  rows <- copr_rows_from_monitor(mon)
+  rows <- rows[!duplicated(rows$name_lower), , drop = FALSE]
+  if (nrow(rows) > 0) {
+    dbExecute(con, "DROP TABLE IF EXISTS copr_packages")
+    dbExecute(con, "CREATE TABLE copr_packages (name TEXT PRIMARY KEY, name_lower TEXT NOT NULL)")
+    dbWriteTable(con, "copr_packages", rows, append = TRUE)
+    dbExecute(con, "CREATE INDEX idx_copr_packages_lower ON copr_packages(name_lower)")
+    cat("  Catalogued", nrow(rows), "COPR packages\n")
+  } else {
+    cat("  Skipped: no COPR packages fetched\n")
+  }
+}, error = function(e) warning("COPR registry build failed: ", conditionMessage(e)))
+cat("\n")
+
+# ---------------------------------------------------------------------------
+# Build the R release-date table (r_versions)
+# ---------------------------------------------------------------------------
+cat("--- Building R versions table ---\n")
+tryCatch({
+  lst  <- jsonlite::fromJSON("https://api.r-hub.io/rversions/r-versions", simplifyVector = FALSE)
+  rows <- r_versions_from_list(lst)
+  rows <- rows[!duplicated(rows$version), , drop = FALSE]
+  if (nrow(rows) > 0) {
+    dbExecute(con, "DROP TABLE IF EXISTS r_versions")
+    dbExecute(con, "CREATE TABLE r_versions (version TEXT PRIMARY KEY, released DATE NOT NULL)")
+    dbWriteTable(con, "r_versions", rows, append = TRUE)
+    dbExecute(con, "CREATE INDEX idx_r_versions_released ON r_versions(released)")
+    cat("  Loaded", nrow(rows), "R versions\n")
+  } else {
+    cat("  Skipped: no R versions fetched\n")
+  }
+}, error = function(e) warning("R versions build failed: ", conditionMessage(e)))
+cat("\n")
+
+# ---------------------------------------------------------------------------
 # Enrich packages with URL/bug_reports from packages_enrichment
 # ---------------------------------------------------------------------------
 dbExecute(con, "BEGIN TRANSACTION")
