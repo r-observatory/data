@@ -257,6 +257,48 @@ tryCatch({
 cat("\n")
 
 # ---------------------------------------------------------------------------
+# Build the Bioconductor package registry (bioc_packages)
+# ---------------------------------------------------------------------------
+cat("--- Building Bioconductor registry ---\n")
+tryCatch({
+  bioc_repos <- c(
+    software   = "https://bioconductor.org/packages/release/bioc",
+    annotation = "https://bioconductor.org/packages/release/data/annotation",
+    experiment = "https://bioconductor.org/packages/release/data/experiment",
+    workflows  = "https://bioconductor.org/packages/release/workflows")
+
+  rows <- do.call(rbind, lapply(names(bioc_repos), function(cat) {
+    mat <- tryCatch(
+      available.packages(repos = bioc_repos[[cat]]),
+      error = function(e) matrix(character(0), ncol = 2,
+                                 dimnames = list(NULL, c("Package", "Version"))))
+    bioc_rows_from_available(mat, cat)
+  }))
+  # First occurrence wins on a name collision across repos.
+  rows <- rows[!duplicated(rows$name_lower), , drop = FALSE]
+
+  if (nrow(rows) > 0) {
+    dbExecute(con, "DROP TABLE IF EXISTS bioc_packages")
+    dbExecute(con, "
+      CREATE TABLE bioc_packages (
+        name       TEXT PRIMARY KEY,
+        name_lower TEXT NOT NULL,
+        version    TEXT,
+        category   TEXT NOT NULL
+      )")
+    dbWriteTable(con, "bioc_packages", rows, append = TRUE)
+    dbExecute(con, "CREATE INDEX idx_bioc_packages_lower ON bioc_packages(name_lower)")
+    cat("  Catalogued", nrow(rows), "Bioconductor packages\n")
+  } else {
+    cat("  Skipped: no Bioconductor packages fetched (source unreachable)\n")
+  }
+}, error = function(e) {
+  warning("Bioconductor registry build failed: ", conditionMessage(e))
+})
+
+cat("\n")
+
+# ---------------------------------------------------------------------------
 # Enrich packages with URL/bug_reports from packages_enrichment
 # ---------------------------------------------------------------------------
 dbExecute(con, "BEGIN TRANSACTION")
