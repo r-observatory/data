@@ -47,7 +47,8 @@ source_dbs <- c(
   "autoobs-downloads-summary.db",
   "copr-downloads-summary.db",
   "queue.db",
-  "bioconductor-metadata.db"
+  "bioconductor-metadata.db",
+  "cran-archive.db"
 )
 
 source_tables <- list(
