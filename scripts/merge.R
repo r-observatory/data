@@ -34,42 +34,8 @@ cat("=== Observatory DB Merge ===\n")
 cat("Sources directory:", sources_dir, "\n")
 cat("Output path:      ", output_path, "\n\n")
 
-# ---------------------------------------------------------------------------
-# Source databases to merge, in order.
-# source_tables: NULL means "merge all tables"; a character vector means
-# "merge only these tables".
-# ---------------------------------------------------------------------------
-source_dbs <- c(
-  "feed.db",
-  "metadata.db",
-  "downloads-summary.db",
-  "r2u-summary.db",
-  "autoobs-downloads-summary.db",
-  "copr-downloads-summary.db",
-  "conda-forge-downloads-summary.db",
-  "bioconda-downloads-summary.db",
-  "queue.db",
-  "bioconductor-metadata.db",
-  "cran-archive.db",
-  "cran-code-metrics.db",
-  "bioc-code-metrics.db"
-)
-
-source_tables <- list(
-  "feed.db"                      = NULL,
-  "metadata.db"                  = NULL,
-  "downloads-summary.db"         = c("downloads_summary"),
-  "r2u-summary.db"               = c("r2u_downloads_summary"),
-  "autoobs-downloads-summary.db" = c("autoobs_downloads_summary"),
-  "copr-downloads-summary.db"    = c("copr_downloads_summary"),
-  "conda-forge-downloads-summary.db" = c("conda_forge_downloads_summary"),
-  "bioconda-downloads-summary.db"    = c("bioconda_downloads_summary"),
-  "queue.db"                     = NULL,
-  "bioconductor-metadata.db"     = c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges"),
-  "cran-archive.db"              = c("cran_archive", "cran_archive_events"),
-  "cran-code-metrics.db"         = c("cran_code_summary", "cran_api_history"),
-  "bioc-code-metrics.db"         = c("bioc_code_summary", "bioc_api_history")
-)
+# source_dbs and source_tables are defined in merge_helpers.R (sourced above)
+# so they can be unit-tested. See scripts/tests/testthat/test-source-config.R.
 
 # ---------------------------------------------------------------------------
 # Remove old output DB if it exists, create fresh
