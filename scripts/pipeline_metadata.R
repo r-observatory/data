@@ -31,6 +31,10 @@ pipeline_config <- function() {
          schedule = "daily 04:00 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE),
     list(name = "copr-downloads", repo = "r-observatory/copr-downloads",
          schedule = "daily 05:30 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE),
+    list(name = "conda-forge-downloads", repo = "r-observatory/conda-forge-downloads",
+         schedule = "daily 05:00 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE),
+    list(name = "bioconda-downloads", repo = "r-observatory/bioconda-downloads",
+         schedule = "daily 05:15 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE),
     list(name = "data",           repo = "r-observatory/data",
          schedule = "daily 08:00 UTC", max_age_h = 30L,   rolling = FALSE, manifest = FALSE,
          self = TRUE)
