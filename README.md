@@ -96,6 +96,8 @@ dbGetQuery(con, "
 | `downloads.db` | [r-observatory/cran-downloads](https://github.com/r-observatory/cran-downloads) | Daily at 07:00 UTC | Download counts from CRAN logs |
 | `autoobs-downloads-summary.db` | [r-observatory/autoobs-downloads](https://github.com/r-observatory/autoobs-downloads) | Daily at 04:00 UTC | Per-package download counts for openSUSE OBS autoCRAN (via MirrorCache) |
 | `copr-downloads-summary.db` | [r-observatory/copr-downloads](https://github.com/r-observatory/copr-downloads) | Daily at 05:30 UTC | Per-chroot download counts for the Fedora COPR iucar/cran project |
+| `conda-forge-downloads-summary.db` | [r-observatory/conda-forge-downloads](https://github.com/r-observatory/conda-forge-downloads) | Daily at 05:00 UTC | Per-package download counts for R packages on conda-forge |
+| `bioconda-downloads-summary.db` | [r-observatory/bioconda-downloads](https://github.com/r-observatory/bioconda-downloads) | Daily at 05:15 UTC | Per-package download counts for R packages on bioconda |
 | `queue.db` | [r-observatory/cran-queue](https://github.com/r-observatory/cran-queue) | Every 2 hours | CRAN incoming queue snapshots |
 
 ## Combined Schema
@@ -129,6 +131,14 @@ dbGetQuery(con, "
 ### From `copr-downloads-summary.db` (copr-downloads)
 
 - **copr_downloads_summary** — Per-chroot RPM download stats for the Fedora COPR iucar/cran project (chroot, release, arch, rpms_total, dl_7d, dl_30d, dl_90d, avg_daily_30d, rank_30d, trend, first_date, last_date). Keyed by chroot (Fedora release plus architecture), not by package: COPR exposes no per-package counts.
+
+### From `conda-forge-downloads-summary.db` (conda-forge-downloads)
+
+- **conda_forge_downloads_summary** — Per-package conda-forge download stats for R packages.
+
+### From `bioconda-downloads-summary.db` (bioconda-downloads)
+
+- **bioconda_downloads_summary** — Per-package bioconda download stats for R packages.
 
 ### From `queue.db` (cran-queue)
 

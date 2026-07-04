@@ -51,3 +51,19 @@ test_that("copr-downloads-summary.db ingests only the copr_downloads_summary tab
     c("copr_downloads_summary")
   )
 })
+
+test_that("conda-forge-downloads-summary.db ingests only the conda_forge_downloads_summary table", {
+  config <- list("conda-forge-downloads-summary.db" = c("conda_forge_downloads_summary"))
+  expect_equal(
+    tables_to_merge_from("conda-forge-downloads-summary.db", config),
+    c("conda_forge_downloads_summary")
+  )
+})
+
+test_that("bioconda-downloads-summary.db ingests only the bioconda_downloads_summary table", {
+  config <- list("bioconda-downloads-summary.db" = c("bioconda_downloads_summary"))
+  expect_equal(
+    tables_to_merge_from("bioconda-downloads-summary.db", config),
+    c("bioconda_downloads_summary")
+  )
+})
