@@ -35,6 +35,8 @@ pipeline_config <- function() {
          schedule = "daily 05:00 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE),
     list(name = "bioconda-downloads", repo = "r-observatory/bioconda-downloads",
          schedule = "daily 05:15 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE),
+    list(name = "c2d4u-downloads", repo = "r-observatory/c2d4u-downloads",
+         schedule = "monthly 3rd 05:45 UTC", max_age_h = 45L * 24L, rolling = TRUE, manifest = TRUE),
     list(name = "data",           repo = "r-observatory/data",
          schedule = "daily 08:00 UTC", max_age_h = 30L,   rolling = FALSE, manifest = FALSE,
          self = TRUE)
