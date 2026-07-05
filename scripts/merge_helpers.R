@@ -72,7 +72,7 @@ source_tables <- list(
   "queue.db"                     = NULL,
   "bioconductor-metadata.db"     = c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges"),
   "cran-archive.db"              = c("cran_archive", "cran_archive_events"),
-  "cran-code-metrics.db"         = c("cran_code_summary", "cran_api_history"),
-  "bioc-code-metrics.db"         = c("bioc_code_summary", "bioc_api_history"),
+  "cran-code-metrics.db"         = c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges"),
+  "bioc-code-metrics.db"         = c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges"),
   "cran-coverage.db"             = c("coverage_summary", "coverage_file", "coverage_function")
 )
