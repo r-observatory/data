@@ -23,6 +23,17 @@ test_that("cran-coverage.db is registered in both merger lists", {
   )
 })
 
+test_that("code-metrics DBs expose summary, api_history and detail tables", {
+  expect_equal(
+    tables_to_merge_from("cran-code-metrics.db", source_tables),
+    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges")
+  )
+  expect_equal(
+    tables_to_merge_from("bioc-code-metrics.db", source_tables),
+    c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges")
+  )
+})
+
 test_that("the merge workflow downloads cran-coverage", {
   yml <- readLines(file.path(getwd(), "..", "..", "..",
                              ".github", "workflows", "merge.yml"))
