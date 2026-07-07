@@ -10,6 +10,12 @@ test_that("max_data_through picks the latest shard date, NA when absent", {
   expect_true(is.na(max_data_through(list())))
 })
 
+test_that("manifest_data_through falls back to summary$data_through without a shard map", {
+  expect_equal(manifest_data_through(list(shards = list("a" = list(date_max = "2026-06-30")))), "2026-06-30")
+  expect_equal(manifest_data_through(list(summary = list(data_through = "2026-07-07"))), "2026-07-07")
+  expect_true(is.na(manifest_data_through(NULL)))
+})
+
 test_that("changed_summary describes manifest runs, NA without a manifest", {
   expect_equal(changed_summary(list(changed_shards = list("a", "b"))), "2 shards changed last run")
   expect_equal(changed_summary(list(changed_shards = list("a"))), "1 shard changed last run")
