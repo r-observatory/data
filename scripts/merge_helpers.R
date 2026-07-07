@@ -57,7 +57,8 @@ source_dbs <- c(
   "cran-archive.db",
   "cran-code-metrics.db",
   "bioc-code-metrics.db",
-  "cran-coverage.db"
+  "cran-coverage.db",
+  "vcs-signals-summary.db"
 )
 
 source_tables <- list(
@@ -76,5 +77,6 @@ source_tables <- list(
   "cran-archive.db"              = c("cran_archive", "cran_archive_events"),
   "cran-code-metrics.db"         = c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges"),
   "bioc-code-metrics.db"         = c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges"),
-  "cran-coverage.db"             = c("coverage_summary", "coverage_file", "coverage_function")
+  "cran-coverage.db"             = c("coverage_summary", "coverage_file", "coverage_function"),
+  "vcs-signals-summary.db"       = c("vcs_signals_summary")
 )

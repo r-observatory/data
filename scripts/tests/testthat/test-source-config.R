@@ -39,3 +39,17 @@ test_that("the merge workflow downloads cran-coverage", {
                              ".github", "workflows", "merge.yml"))
   expect_true(any(grepl("cran-coverage", yml)))
 })
+
+test_that("vcs-signals is registered in both merger lists", {
+  expect_true("vcs-signals-summary.db" %in% source_dbs)
+  expect_equal(
+    tables_to_merge_from("vcs-signals-summary.db", source_tables),
+    c("vcs_signals_summary")
+  )
+})
+
+test_that("the merge workflow downloads vcs-signals", {
+  yml <- readLines(file.path(getwd(), "..", "..", "..",
+                             ".github", "workflows", "merge.yml"))
+  expect_true(any(grepl("vcs-signals", yml)))
+})

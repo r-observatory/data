@@ -37,6 +37,8 @@ pipeline_config <- function() {
          schedule = "daily 05:15 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE),
     list(name = "c2d4u-downloads", repo = "r-observatory/c2d4u-downloads",
          schedule = "monthly 3rd 05:45 UTC", max_age_h = 45L * 24L, rolling = TRUE, manifest = TRUE),
+    list(name = "vcs-signals",    repo = "r-observatory/vcs-signals",
+         schedule = "daily 06:30 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE),
     list(name = "data",           repo = "r-observatory/data",
          schedule = "daily 08:00 UTC", max_age_h = 30L,   rolling = FALSE, manifest = FALSE,
          self = TRUE)
@@ -53,6 +55,14 @@ max_data_through <- function(shards) {
   dm <- vapply(shards, function(s) s$date_max %||% NA_character_, character(1))
   dm <- dm[!is.na(dm) & nzchar(dm)]
   if (length(dm) == 0) NA_character_ else max(dm)
+}
+
+#' Latest data date from a manifest: its per-shard coverage map, falling back to a
+#' top-level summary$data_through (pipelines that publish that instead of a shard map).
+manifest_data_through <- function(man) {
+  dt <- max_data_through(man$shards)
+  if (is.na(dt)) dt <- man$summary$data_through %||% NA_character_
+  dt
 }
 
 #' Short human description of what changed in a manifest's last run (or NA).
@@ -103,7 +113,7 @@ build_pipeline_metadata <- function(fetched, now_iso) {
       released_at            = released_at,
       last_checked           = last_checked,
       last_changed           = last_changed,
-      data_through           = max_data_through(man$shards),
+      data_through           = manifest_data_through(man),
       changed_summary        = changed_summary(man),
       upstream_repo          = cfg$upstream %||% NA_character_,
       upstream_latest_at     = up$latest_at %||% NA_character_,
