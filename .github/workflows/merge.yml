@@ -130,6 +130,20 @@ jobs:
         run: |
           Rscript scripts/collect-metadata.R observatory.db
 
+      - name: Guard release-asset size
+        run: |
+          # GitHub release assets are hard-capped at 2 GiB. Abort before we
+          # touch any tag if observatory.db is oversized, so a runaway merge
+          # fails loud here instead of deleting today's release and then
+          # failing on the upload.
+          DB_BYTES=$(stat -c%s observatory.db)
+          MAX_BYTES=2040109465
+          echo "observatory.db is $DB_BYTES bytes (limit $MAX_BYTES)."
+          if [ "$DB_BYTES" -gt "$MAX_BYTES" ]; then
+            echo "::error::observatory.db ($DB_BYTES bytes) exceeds the ${MAX_BYTES}-byte release-asset guard. Not publishing."
+            exit 1
+          fi
+
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
