@@ -39,6 +39,11 @@ test_that("dataset row_sketch tables stay out of observatory.db", {
   expect_false("bioc_dataset_sketches" %in% tables_to_merge_from("bioc-code-metrics.db", source_tables))
 })
 
+test_that("the name-authority tables are copied into observatory.db", {
+  expect_true("cran_names_all" %in% tables_to_merge_from("cran-archive.db", source_tables))
+  expect_true("bioc_names_all" %in% tables_to_merge_from("bioconductor-metadata.db", source_tables))
+})
+
 test_that("the merge workflow downloads cran-coverage", {
   yml <- readLines(file.path(getwd(), "..", "..", "..",
                              ".github", "workflows", "merge.yml"))

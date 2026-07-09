@@ -73,8 +73,8 @@ source_tables <- list(
   "c2d4u-downloads-summary.db"    = c("c2d4u_downloads_summary"),
   "bioconductor-summary.db"      = c("bioc_downloads_summary"),
   "queue.db"                     = NULL,
-  "bioconductor-metadata.db"     = c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges"),
-  "cran-archive.db"              = c("cran_archive", "cran_archive_events"),
+  "bioconductor-metadata.db"     = c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges", "bioc_names_all"),
+  "cran-archive.db"              = c("cran_archive", "cran_archive_events", "cran_names_all"),
   # The dataset row_sketch table is deliberately EXCLUDED: it is an offline
   # near-duplicate structure that the viewer never queries, so it stays in the
   # source db and does not inflate observatory.db.
