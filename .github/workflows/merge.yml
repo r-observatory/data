@@ -40,6 +40,31 @@ jobs:
         run: |
           mkdir -p sources
 
+          latest_tag() {  # $1=repo  $2=series-prefix (code|data)
+            gh release list --repo "r-observatory/$1" --json tagName -q '.[].tagName' \
+              | grep "^$2-" | sort -r | head -1
+          }
+          dl_dated() {    # $1=repo  $2=series  $3=target-filename
+            tag=$(latest_tag "$1" "$2")
+            if [ -z "$tag" ]; then
+              echo "  Warning: no $2-* release in r-observatory/$1"; return 0
+            fi
+            tmpdir=$(mktemp -d)
+            if gh release download "$tag" --repo "r-observatory/$1" --pattern "$3" --dir "$tmpdir" 2>/dev/null; then
+              mv "$tmpdir/$3" "sources/$3"
+              echo "  -> sources/$3 from $tag ($(stat --format=%s "sources/$3") bytes)"
+            else
+              echo "  Warning: could not download $3 from $1@$tag"
+            fi
+            rm -rf "$tmpdir"
+          }
+
+          echo "--- Metrics repos (dated series) ---"
+          dl_dated cran-code-metrics code cran-code-metrics.db
+          dl_dated cran-code-metrics data cran-data-metrics.db
+          dl_dated bioc-code-metrics code bioc-code-metrics.db
+          dl_dated bioc-code-metrics data bioc-data-metrics.db
+
           declare -A repo_db_map
           repo_db_map[cran-queue]=queue.db
           repo_db_map[cran-feed]=feed.db
@@ -54,12 +79,10 @@ jobs:
           repo_db_map[bioconductor-downloads]=bioconductor-summary.db
           repo_db_map[bioconductor-metadata]=bioconductor-metadata.db
           repo_db_map[cran-archive]=cran-archive.db
-          repo_db_map[cran-code-metrics]=cran-code-metrics.db
-          repo_db_map[bioc-code-metrics]=bioc-code-metrics.db
           repo_db_map[cran-coverage]=cran-coverage.db
           repo_db_map[vcs-signals]=vcs-signals-summary.db
 
-          for repo in cran-queue cran-feed cran-downloads cran-metadata r2u-downloads autoobs-downloads copr-downloads conda-forge-downloads bioconda-downloads c2d4u-downloads bioconductor-downloads bioconductor-metadata cran-archive cran-code-metrics bioc-code-metrics cran-coverage vcs-signals; do
+          for repo in cran-queue cran-feed cran-downloads cran-metadata r2u-downloads autoobs-downloads copr-downloads conda-forge-downloads bioconda-downloads c2d4u-downloads bioconductor-downloads bioconductor-metadata cran-archive cran-coverage vcs-signals; do
             target="${repo_db_map[$repo]}"
             echo "--- Downloading from r-observatory/$repo ---"
 
@@ -69,7 +92,7 @@ jobs:
             # cran-downloads and r2u-downloads use a rolling "current" tag with
             # sharded assets; we only want their small summary DB ($target).
             case "$repo" in
-              cran-downloads|r2u-downloads|autoobs-downloads|copr-downloads|conda-forge-downloads|bioconda-downloads|c2d4u-downloads|bioconductor-downloads|bioconductor-metadata|cran-archive|cran-code-metrics|bioc-code-metrics|cran-coverage|vcs-signals)
+              cran-downloads|r2u-downloads|autoobs-downloads|copr-downloads|conda-forge-downloads|bioconda-downloads|c2d4u-downloads|bioconductor-downloads|bioconductor-metadata|cran-archive|cran-coverage|vcs-signals)
                 download_cmd=(gh release download current
                               --repo "r-observatory/$repo"
                               --pattern "$target"

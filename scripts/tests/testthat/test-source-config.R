@@ -26,17 +26,46 @@ test_that("cran-coverage.db is registered in both merger lists", {
 test_that("code-metrics DBs expose summary, api_history and detail tables", {
   expect_equal(
     tables_to_merge_from("cran-code-metrics.db", source_tables),
-    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_datasets", "cran_dataset_versions", "cran_dataset_contents")
+    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges")
   )
   expect_equal(
     tables_to_merge_from("bioc-code-metrics.db", source_tables),
-    c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges", "bioc_datasets", "bioc_dataset_versions", "bioc_dataset_contents")
+    c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges")
   )
 })
 
 test_that("dataset row_sketch tables stay out of observatory.db", {
-  expect_false("cran_dataset_sketches" %in% tables_to_merge_from("cran-code-metrics.db", source_tables))
-  expect_false("bioc_dataset_sketches" %in% tables_to_merge_from("bioc-code-metrics.db", source_tables))
+  expect_false("cran_dataset_sketches" %in% tables_to_merge_from("cran-data-metrics.db", source_tables))
+  expect_false("bioc_dataset_sketches" %in% tables_to_merge_from("bioc-data-metrics.db", source_tables))
+})
+
+test_that("code-metrics DBs carry only code tables after the split", {
+  expect_equal(
+    tables_to_merge_from("cran-code-metrics.db", source_tables),
+    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges")
+  )
+  expect_equal(
+    tables_to_merge_from("bioc-code-metrics.db", source_tables),
+    c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges")
+  )
+})
+
+test_that("data-metrics DBs are registered and carry only dataset tables", {
+  expect_true("cran-data-metrics.db" %in% source_dbs)
+  expect_true("bioc-data-metrics.db" %in% source_dbs)
+  expect_equal(
+    tables_to_merge_from("cran-data-metrics.db", source_tables),
+    c("cran_datasets", "cran_dataset_versions", "cran_dataset_contents")
+  )
+  expect_equal(
+    tables_to_merge_from("bioc-data-metrics.db", source_tables),
+    c("bioc_datasets", "bioc_dataset_versions", "bioc_dataset_contents")
+  )
+})
+
+test_that("sketch tables never enter observatory.db from either DB", {
+  expect_false("cran_dataset_sketches" %in% tables_to_merge_from("cran-data-metrics.db", source_tables))
+  expect_false("bioc_dataset_sketches" %in% tables_to_merge_from("bioc-data-metrics.db", source_tables))
 })
 
 test_that("the name-authority tables are copied into observatory.db", {
@@ -62,4 +91,15 @@ test_that("the merge workflow downloads vcs-signals", {
   yml <- readLines(file.path(getwd(), "..", "..", "..",
                              ".github", "workflows", "merge.yml"))
   expect_true(any(grepl("vcs-signals", yml)))
+})
+
+test_that("the merge workflow downloads the split code and data metrics DBs", {
+  yml <- readLines(file.path(getwd(), "..", "..", "..",
+                             ".github", "workflows", "merge.yml"))
+  joined <- paste(yml, collapse = "\n")
+  expect_true(grepl("cran-data-metrics.db", joined, fixed = TRUE))
+  expect_true(grepl("bioc-data-metrics.db", joined, fixed = TRUE))
+  # Dated-tag discovery, not the rolling "current" tag, for the metrics repos.
+  expect_true(grepl("code-", joined, fixed = TRUE))
+  expect_true(grepl("data-", joined, fixed = TRUE))
 })
