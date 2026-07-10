@@ -92,3 +92,14 @@ test_that("the merge workflow downloads vcs-signals", {
                              ".github", "workflows", "merge.yml"))
   expect_true(any(grepl("vcs-signals", yml)))
 })
+
+test_that("the merge workflow downloads the split code and data metrics DBs", {
+  yml <- readLines(file.path(getwd(), "..", "..", "..",
+                             ".github", "workflows", "merge.yml"))
+  joined <- paste(yml, collapse = "\n")
+  expect_true(grepl("cran-data-metrics.db", joined, fixed = TRUE))
+  expect_true(grepl("bioc-data-metrics.db", joined, fixed = TRUE))
+  # Dated-tag discovery, not the rolling "current" tag, for the metrics repos.
+  expect_true(grepl("code-", joined, fixed = TRUE))
+  expect_true(grepl("data-", joined, fixed = TRUE))
+})
