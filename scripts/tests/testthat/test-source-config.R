@@ -73,11 +73,12 @@ test_that("the name-authority tables are copied into observatory.db", {
   expect_true("bioc_names_all" %in% tables_to_merge_from("bioconductor-metadata.db", source_tables))
 })
 
-test_that("cran-archive exposes archive, events, name authority, and durable history", {
+test_that("cran-archive exposes archive, events, name authority, history, and lineage", {
   expect_true("cran-archive.db" %in% source_dbs)
   expect_equal(
     tables_to_merge_from("cran-archive.db", source_tables),
-    c("cran_archive", "cran_archive_events", "cran_names_all", "cran_archive_history")
+    c("cran_archive", "cran_archive_events", "cran_names_all", "cran_archive_history",
+      "cran_archive_lineage", "cran_archive_action_counts")
   )
 })
 
