@@ -73,6 +73,14 @@ test_that("the name-authority tables are copied into observatory.db", {
   expect_true("bioc_names_all" %in% tables_to_merge_from("bioconductor-metadata.db", source_tables))
 })
 
+test_that("cran-archive exposes archive, events, name authority, and durable history", {
+  expect_true("cran-archive.db" %in% source_dbs)
+  expect_equal(
+    tables_to_merge_from("cran-archive.db", source_tables),
+    c("cran_archive", "cran_archive_events", "cran_names_all", "cran_archive_history")
+  )
+})
+
 test_that("the merge workflow downloads cran-coverage", {
   yml <- readLines(file.path(getwd(), "..", "..", "..",
                              ".github", "workflows", "merge.yml"))
