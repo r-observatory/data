@@ -40,14 +40,18 @@ jobs:
         run: |
           mkdir -p sources
 
-          latest_tag() {  # $1=repo  $2=series-prefix (code|data)
+          latest_tag() {  # $1=repo  $2=series-prefix (metrics|code|data)
             gh release list --repo "r-observatory/$1" --json tagName -q '.[].tagName' \
-              | grep "^$2-" | sort -r | head -1
+              | { grep "^$2-" || true; } | sort -r | head -1
           }
           dl_dated() {    # $1=repo  $2=series  $3=target-filename
-            tag=$(latest_tag "$1" "$2")
+            # Metrics repos now publish ONE dated metrics-* release carrying both the
+            # code and data DBs; prefer it and fall back to the legacy per-series
+            # $2-* tag while the metrics- scheme rolls out.
+            tag=$(latest_tag "$1" metrics)
+            [ -n "$tag" ] || tag=$(latest_tag "$1" "$2")
             if [ -z "$tag" ]; then
-              echo "  Warning: no $2-* release in r-observatory/$1"; return 0
+              echo "  Warning: no metrics-*/$2-* release in r-observatory/$1"; return 0
             fi
             tmpdir=$(mktemp -d)
             if gh release download "$tag" --repo "r-observatory/$1" --pattern "$3" --dir "$tmpdir" 2>/dev/null; then
