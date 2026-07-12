@@ -26,7 +26,7 @@ test_that("cran-coverage.db is registered in both merger lists", {
 test_that("code-metrics DBs expose summary, api_history and detail tables", {
   expect_equal(
     tables_to_merge_from("cran-code-metrics.db", source_tables),
-    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges")
+    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_archived_meta")
   )
   expect_equal(
     tables_to_merge_from("bioc-code-metrics.db", source_tables),
@@ -39,10 +39,12 @@ test_that("dataset row_sketch tables stay out of observatory.db", {
   expect_false("bioc_dataset_sketches" %in% tables_to_merge_from("bioc-data-metrics.db", source_tables))
 })
 
-test_that("code-metrics DBs carry only code tables after the split", {
+test_that("code-metrics DBs carry code tables (plus cran archived metadata) after the split", {
+  # cran-code-metrics also parses each archived DESCRIPTION, so it ships the
+  # cran_archived_meta table that powers removed-package detail pages.
   expect_equal(
     tables_to_merge_from("cran-code-metrics.db", source_tables),
-    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges")
+    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_archived_meta")
   )
   expect_equal(
     tables_to_merge_from("bioc-code-metrics.db", source_tables),
