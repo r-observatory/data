@@ -81,7 +81,7 @@ source_tables <- list(
   # The dataset row_sketch table is deliberately EXCLUDED: it is an offline
   # near-duplicate structure that the viewer never queries, so it stays in the
   # source db and does not inflate observatory.db.
-  "cran-code-metrics.db"         = c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges"),
+  "cran-code-metrics.db"         = c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_archived_meta"),
   "cran-data-metrics.db"         = c("cran_datasets", "cran_dataset_versions", "cran_dataset_contents"),
   "bioc-code-metrics.db"         = c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges"),
   "bioc-data-metrics.db"         = c("bioc_datasets", "bioc_dataset_versions", "bioc_dataset_contents"),
