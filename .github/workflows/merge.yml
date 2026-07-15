@@ -40,6 +40,34 @@ jobs:
         run: |
           mkdir -p sources
 
+          # Fail the whole merge if a downloaded asset's on-disk byte size does
+          # not EXACTLY match the size GitHub declares for that release asset. A
+          # torn / truncated download (or a mid-write asset) would otherwise be
+          # merged silently and ship an incomplete DB. This needs no manifest, so
+          # it applies uniformly to every source. A legitimately absent source is
+          # handled by the warn-and-continue paths and never reaches this check,
+          # so only a real size MISMATCH on a file that WAS downloaded is fatal.
+          verify_size() {  # $1=repo(owner/name)  $2=tag(empty=latest)  $3=asset  $4=local-path
+            local repo="$1" tag="$2" asset="$3" path="$4"
+            local view=(release view)
+            [ -n "$tag" ] && view+=("$tag")
+            view+=(--repo "$repo" --json assets
+                   --jq ".assets[] | select(.name == \"$asset\") | .size")
+            local declared
+            declared=$(gh "${view[@]}" 2>/dev/null | head -1) || true
+            if [ -z "$declared" ]; then
+              echo "::error::Cannot read declared size of $asset from ${repo}@${tag:-latest}; refusing to merge a possibly-truncated download."
+              exit 1
+            fi
+            local actual
+            actual=$(stat --format=%s "$path")
+            if [ "$actual" != "$declared" ]; then
+              echo "::error::Torn download: $path is $actual bytes but ${repo}@${tag:-latest} declares $declared bytes for $asset. Aborting merge."
+              exit 1
+            fi
+            echo "  size OK: $asset = $actual bytes (matches release asset)"
+          }
+
           latest_tag() {  # $1=repo  $2=series-prefix (metrics|code|data)
             gh release list --repo "r-observatory/$1" --json tagName -q '.[].tagName' \
               | { grep "^$2-" || true; } | sort -r | head -1
@@ -57,6 +85,7 @@ jobs:
             if gh release download "$tag" --repo "r-observatory/$1" --pattern "$3" --dir "$tmpdir" 2>/dev/null; then
               mv "$tmpdir/$3" "sources/$3"
               echo "  -> sources/$3 from $tag ($(stat --format=%s "sources/$3") bytes)"
+              verify_size "r-observatory/$1" "$tag" "$3" "sources/$3"
             else
               echo "  Warning: could not download $3 from $1@$tag"
             fi
@@ -98,12 +127,14 @@ jobs:
             # sharded assets; we only want their small summary DB ($target).
             case "$repo" in
               cran-downloads|r2u-downloads|autoobs-downloads|copr-downloads|conda-forge-downloads|bioconda-downloads|c2d4u-downloads|bioconductor-downloads|bioconductor-metadata|cran-archive|cran-coverage|vcs-signals|cran-task-views)
+                dl_tag=current
                 download_cmd=(gh release download current
                               --repo "r-observatory/$repo"
                               --pattern "$target"
                               --dir "$tmpdir")
                 ;;
               *)
+                dl_tag=""
                 download_cmd=(gh release download
                               --repo "r-observatory/$repo"
                               --pattern "*.db"
@@ -117,6 +148,10 @@ jobs:
               if [ -n "$downloaded" ]; then
                 mv "$downloaded" "sources/$target"
                 echo "  -> sources/$target ($(stat --format=%s "sources/$target") bytes)"
+                # Verify against the ACTUAL downloaded asset name (not $target,
+                # which is a local rename), so the check holds even where the
+                # published asset name differs from the merged filename.
+                verify_size "r-observatory/$repo" "$dl_tag" "$(basename "$downloaded")" "sources/$target"
               else
                 echo "  Warning: No .db file found in release for $repo"
               fi
