@@ -114,3 +114,23 @@ test_that("the merge workflow downloads the split code and data metrics DBs", {
   expect_true(grepl("code-", joined, fixed = TRUE))
   expect_true(grepl("data-", joined, fixed = TRUE))
 })
+
+test_that("cran-task-views is registered in both merger lists", {
+  expect_true("cran-task-views.db" %in% source_dbs)
+  expect_equal(
+    tables_to_merge_from("cran-task-views.db", source_tables),
+    c("cran_task_views", "cran_task_view_events", "cran_task_view_membership")
+  )
+})
+
+test_that("the merge workflow downloads cran-task-views", {
+  yml <- readLines(file.path(getwd(), "..", "..", "..",
+                             ".github", "workflows", "merge.yml"))
+  expect_true(any(grepl("cran-task-views", yml)))
+})
+
+test_that("missing_expected_tables flags a dropped table only when the source was present", {
+  expect_identical(missing_expected_tables(FALSE, c("a", "b"), c("a")), character(0))
+  expect_identical(missing_expected_tables(TRUE,  c("a", "b"), c("a")), "b")
+  expect_identical(missing_expected_tables(TRUE,  c("a", "b"), c("a", "b")), character(0))
+})

@@ -85,8 +85,9 @@ jobs:
           repo_db_map[cran-archive]=cran-archive.db
           repo_db_map[cran-coverage]=cran-coverage.db
           repo_db_map[vcs-signals]=vcs-signals-summary.db
+          repo_db_map[cran-task-views]=cran-task-views.db
 
-          for repo in cran-queue cran-feed cran-downloads cran-metadata r2u-downloads autoobs-downloads copr-downloads conda-forge-downloads bioconda-downloads c2d4u-downloads bioconductor-downloads bioconductor-metadata cran-archive cran-coverage vcs-signals; do
+          for repo in cran-queue cran-feed cran-downloads cran-metadata r2u-downloads autoobs-downloads copr-downloads conda-forge-downloads bioconda-downloads c2d4u-downloads bioconductor-downloads bioconductor-metadata cran-archive cran-coverage vcs-signals cran-task-views; do
             target="${repo_db_map[$repo]}"
             echo "--- Downloading from r-observatory/$repo ---"
 
@@ -96,7 +97,7 @@ jobs:
             # cran-downloads and r2u-downloads use a rolling "current" tag with
             # sharded assets; we only want their small summary DB ($target).
             case "$repo" in
-              cran-downloads|r2u-downloads|autoobs-downloads|copr-downloads|conda-forge-downloads|bioconda-downloads|c2d4u-downloads|bioconductor-downloads|bioconductor-metadata|cran-archive|cran-coverage|vcs-signals)
+              cran-downloads|r2u-downloads|autoobs-downloads|copr-downloads|conda-forge-downloads|bioconda-downloads|c2d4u-downloads|bioconductor-downloads|bioconductor-metadata|cran-archive|cran-coverage|vcs-signals|cran-task-views)
                 download_cmd=(gh release download current
                               --repo "r-observatory/$repo"
                               --pattern "$target"

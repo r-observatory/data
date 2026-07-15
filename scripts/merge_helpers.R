@@ -60,7 +60,8 @@ source_dbs <- c(
   "bioc-code-metrics.db",
   "bioc-data-metrics.db",
   "cran-coverage.db",
-  "vcs-signals-summary.db"
+  "vcs-signals-summary.db",
+  "cran-task-views.db"
 )
 
 source_tables <- list(
@@ -86,5 +87,14 @@ source_tables <- list(
   "bioc-code-metrics.db"         = c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges"),
   "bioc-data-metrics.db"         = c("bioc_datasets", "bioc_dataset_versions", "bioc_dataset_contents"),
   "cran-coverage.db"             = c("coverage_summary", "coverage_file", "coverage_function"),
-  "vcs-signals-summary.db"       = c("vcs_signals_summary")
+  "vcs-signals-summary.db"       = c("vcs_signals_summary"),
+  "cran-task-views.db"           = c("cran_task_views", "cran_task_view_events", "cran_task_view_membership")
 )
+
+#' Post-merge safety check. When a source DB was present, verify its expected
+#' tables landed in the output; returns the missing names (character(0) if none).
+#' Guards against a partial edit silently dropping the task-view tables.
+missing_expected_tables <- function(source_present, expected, present_tables) {
+  if (!isTRUE(source_present)) return(character(0))
+  setdiff(expected, present_tables)
+}
