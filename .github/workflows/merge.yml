@@ -158,17 +158,28 @@ jobs:
         run: |
           Rscript scripts/collect-metadata.R observatory.db
 
+      - name: Compress database for release
+        run: |
+          # The uncompressed observatory.db has grown close to GitHub's 2 GiB
+          # release-asset cap, so we publish a zstd-compressed asset instead.
+          # The viewer deploy decompresses it before use; the database itself
+          # is unchanged.
+          command -v zstd >/dev/null || { echo "::error::zstd not found on the runner"; exit 1; }
+          zstd -12 -T0 -f observatory.db -o observatory.db.zst
+          echo "observatory.db $(stat -c%s observatory.db) bytes -> observatory.db.zst $(stat -c%s observatory.db.zst) bytes"
+
       - name: Guard release-asset size
         run: |
           # GitHub release assets are hard-capped at 2 GiB. Abort before we
-          # touch any tag if observatory.db is oversized, so a runaway merge
-          # fails loud here instead of deleting today's release and then
-          # failing on the upload.
-          DB_BYTES=$(stat -c%s observatory.db)
+          # touch any tag if the published asset is oversized, so a runaway
+          # merge fails loud here instead of deleting today's release and then
+          # failing on the upload. We publish the compressed asset, so guard
+          # that.
+          ASSET_BYTES=$(stat -c%s observatory.db.zst)
           MAX_BYTES=2040109465
-          echo "observatory.db is $DB_BYTES bytes (limit $MAX_BYTES)."
-          if [ "$DB_BYTES" -gt "$MAX_BYTES" ]; then
-            echo "::error::observatory.db ($DB_BYTES bytes) exceeds the ${MAX_BYTES}-byte release-asset guard. Not publishing."
+          echo "observatory.db.zst is $ASSET_BYTES bytes (limit $MAX_BYTES)."
+          if [ "$ASSET_BYTES" -gt "$MAX_BYTES" ]; then
+            echo "::error::observatory.db.zst ($ASSET_BYTES bytes) exceeds the ${MAX_BYTES}-byte release-asset guard. Not publishing."
             exit 1
           fi
 
@@ -183,7 +194,7 @@ jobs:
           git push --delete origin "$TAG" 2>/dev/null || true
 
           gh release create "$TAG" \
-            observatory.db \
+            observatory.db.zst \
             --title "Observatory DB — $(date -u +%Y-%m-%d)" \
             --notes-file release_notes.md \
             --latest
