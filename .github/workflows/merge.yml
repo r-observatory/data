@@ -40,29 +40,45 @@ jobs:
         run: |
           mkdir -p sources
 
-          # Fail the whole merge if a downloaded asset's on-disk byte size does
-          # not EXACTLY match the size GitHub declares for that release asset. A
+          # Fail the merge if a downloaded asset's on-disk byte size does not
+          # EXACTLY match the size GitHub declares for that release asset. A
           # torn / truncated download (or a mid-write asset) would otherwise be
           # merged silently and ship an incomplete DB. This needs no manifest, so
           # it applies uniformly to every source. A legitimately absent source is
           # handled by the warn-and-continue paths and never reaches this check,
           # so only a real size MISMATCH on a file that WAS downloaded is fatal.
+          #
+          # `gh release view` itself can hiccup (transient network/5xx) on any
+          # one of ~20 sequential sources; that is not proof of a torn download,
+          # so it is retried and, if still unreadable, warned-and-skipped rather
+          # than aborting the whole run -- the downstream PRAGMA integrity_check
+          # and row-count gates already backstop real corruption.
           verify_size() {  # $1=repo(owner/name)  $2=tag(empty=latest)  $3=asset  $4=local-path
             local repo="$1" tag="$2" asset="$3" path="$4"
             local view=(release view)
             [ -n "$tag" ] && view+=("$tag")
             view+=(--repo "$repo" --json assets
                    --jq ".assets[] | select(.name == \"$asset\") | .size")
-            local declared
-            declared=$(gh "${view[@]}" 2>/dev/null | head -1) || true
+
+            local declared="" attempt backoffs=(2 4)
+            for attempt in 1 2 3; do
+              declared=$(gh "${view[@]}" 2>/dev/null | head -1) || true
+              [ -n "$declared" ] && break
+              if [ "$attempt" -lt 3 ]; then
+                echo "  Warning: could not read declared size of $asset from ${repo}@${tag:-latest} (attempt $attempt/3), retrying..."
+                sleep "${backoffs[$((attempt - 1))]}"
+              fi
+            done
+
             if [ -z "$declared" ]; then
-              echo "::error::Cannot read declared size of $asset from ${repo}@${tag:-latest}; refusing to merge a possibly-truncated download."
-              exit 1
+              echo "::warning::Could not read declared size of $asset from ${repo}@${tag:-latest} after 3 attempts; continuing without a size check for this source (downstream integrity/row-count checks still apply)."
+              return 0
             fi
+
             local actual
             actual=$(stat --format=%s "$path")
             if [ "$actual" != "$declared" ]; then
-              echo "::error::Torn download: $path is $actual bytes but ${repo}@${tag:-latest} declares $declared bytes for $asset. Aborting merge."
+              echo "::error::Torn download: $asset from ${repo}@${tag:-latest} has declared=$declared bytes but actual=$actual bytes on disk at $path. Aborting merge."
               exit 1
             fi
             echo "  size OK: $asset = $actual bytes (matches release asset)"
@@ -134,11 +150,24 @@ jobs:
                               --dir "$tmpdir")
                 ;;
               *)
-                dl_tag=""
-                download_cmd=(gh release download
-                              --repo "r-observatory/$repo"
-                              --pattern "*.db"
-                              --dir "$tmpdir")
+                # No fixed tag: these publish plain dated releases with
+                # "latest" moving over time. Resolve the tag ONCE up front and
+                # download+verify that exact tag, so a re-publish between the
+                # download and the size check can't make verify_size compare
+                # against a different release than the one we just downloaded
+                # (a false-mismatch TOCTOU, real for frequent publishers).
+                dl_tag=$(gh release view --repo "r-observatory/$repo" --json tagName -q .tagName 2>/dev/null) || true
+                if [ -n "$dl_tag" ]; then
+                  download_cmd=(gh release download "$dl_tag"
+                                --repo "r-observatory/$repo"
+                                --pattern "*.db"
+                                --dir "$tmpdir")
+                else
+                  download_cmd=(gh release download
+                                --repo "r-observatory/$repo"
+                                --pattern "*.db"
+                                --dir "$tmpdir")
+                fi
                 ;;
             esac
 

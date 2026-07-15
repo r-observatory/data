@@ -173,3 +173,41 @@ test_that("write_pipeline_metadata persists integrity + completeness columns", {
   expect_equal(got$db_sha256, "cafe")
   expect_equal(got$complete, 1L)
 })
+
+test_that("sha256_file/db_integrity: real file yields correct size+hash, missing file yields NA/NA", {
+  # sha256_file() on an arbitrary path, checked against an independent (shell
+  # utility) sha256 computation rather than re-deriving via the same code path.
+  tmp <- tempfile()
+  writeLines("pipeline metadata integrity test", tmp)
+  on.exit(unlink(tmp), add = TRUE)
+
+  sha_util <- Sys.which("sha256sum")
+  independent_sha256 <- if (nzchar(sha_util)) {
+    sub("\\s.*$", "", system2(sha_util, shQuote(tmp), stdout = TRUE)[1])
+  } else {
+    sha_util <- Sys.which("shasum")
+    sub("\\s.*$", "", system2(sha_util, c("-a", "256", shQuote(tmp)), stdout = TRUE)[1])
+  }
+  skip_if(!nzchar(sha_util), "no sha256 utility available for an independent check")
+
+  expect_equal(sha256_file(tmp), independent_sha256)
+
+  # db_integrity(cfg) resolves sources/<db_filename> relative to the working
+  # directory, so exercise it from a scratch dir with its own sources/.
+  old_wd <- getwd()
+  scratch <- tempfile("meta-io-")
+  dir.create(file.path(scratch, "sources"), recursive = TRUE)
+  setwd(scratch)
+  on.exit({ setwd(old_wd); unlink(scratch, recursive = TRUE) }, add = TRUE)
+
+  file.copy(tmp, file.path("sources", "present.db"))
+  io <- default_meta_io()
+
+  present <- io$db_integrity(list(db_filename = "present.db"))
+  expect_equal(present$bytes, file.size(file.path("sources", "present.db")))
+  expect_equal(present$sha256, independent_sha256)
+
+  missing <- io$db_integrity(list(db_filename = "missing.db"))
+  expect_true(is.na(missing$bytes))
+  expect_true(is.na(missing$sha256))
+})
