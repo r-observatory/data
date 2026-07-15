@@ -194,6 +194,20 @@ if (merged_count == 0) {
 }
 cat(sprintf("\n%d of %d sources merged successfully\n\n", merged_count, length(source_dbs)))
 
+# Fail loud if the task-view source was present but its tables did not land
+# (a partial merger edit would otherwise drop them silently; the viewer's
+# empty-state would mask it).
+ctv_src <- file.path(sources_dir, "cran-task-views.db")
+present_tables <- dbGetQuery(con,
+  "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")$name
+ctv_missing <- missing_expected_tables(
+  file.exists(ctv_src),
+  c("cran_task_views", "cran_task_view_events", "cran_task_view_membership"),
+  present_tables)
+if (length(ctv_missing) > 0L) {
+  stop("cran-task-views tables missing after merge: ", paste(ctv_missing, collapse = ", "))
+}
+
 # ---------------------------------------------------------------------------
 # Build FTS5 search index on packages table
 # ---------------------------------------------------------------------------
