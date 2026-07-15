@@ -95,3 +95,81 @@ test_that("write_pipeline_metadata creates the table and round-trips", {
   expect_equal(got$pipeline, "data")
   expect_equal(got$schedule, "s")
 })
+
+test_that("manifest_complete reads standardized and metrics-style flags, NA otherwise", {
+  expect_equal(manifest_complete(list(complete = TRUE)), 1L)
+  expect_equal(manifest_complete(list(complete = FALSE)), 0L)
+  expect_equal(manifest_complete(list(bootstrap = list(bootstrap_complete = TRUE))), 1L)
+  expect_equal(manifest_complete(list(bootstrap = list(bootstrap_complete = FALSE))), 0L)
+  # A manifest that exposes no completeness signal, and no manifest at all,
+  # are both honest-NA (unknown), not 0.
+  expect_true(is.na(manifest_complete(list(summary = list(data_through = "2026-07-01")))))
+  expect_true(is.na(manifest_complete(NULL)))
+})
+
+test_that("build surfaces db_bytes/db_sha256 and metrics-style completeness", {
+  fetched <- list(
+    # Metrics-style: code-manifest.json with bootstrap.bootstrap_complete=TRUE,
+    # and integrity computed from the merged-in source DB.
+    "cran-code-metrics" = list(
+      cfg = list(name = "cran-code-metrics", repo = "r-observatory/cran-code-metrics",
+                 schedule = "daily 04:00 UTC", max_age_h = 30L, rolling = FALSE,
+                 manifest = TRUE, manifest_file = "code-manifest.json",
+                 db_filename = "cran-code-metrics.db"),
+      release = list(tag = "metrics-2026-07-14", published_at = "2026-07-14T05:00:00Z"),
+      manifest = list(bootstrap = list(bootstrap_complete = TRUE)),
+      upstream = NULL,
+      integrity = list(bytes = 1162678272, sha256 = "b4c719d0deadbeef")),
+    # No-manifest source: complete is honest-NA, but integrity still comes through.
+    "cran-feed" = list(
+      cfg = list(name = "cran-feed", repo = "r-observatory/cran-feed",
+                 schedule = "every 6 hours", max_age_h = 8L, rolling = FALSE,
+                 manifest = FALSE, db_filename = "feed.db"),
+      release = list(tag = "v1", published_at = "2026-07-14T00:00:00Z"),
+      manifest = NULL, upstream = NULL,
+      integrity = list(bytes = 4096, sha256 = "abc123")))
+
+  df <- build_pipeline_metadata(fetched, now_iso = "2026-07-14T08:00:00Z")
+
+  m <- df[df$pipeline == "cran-code-metrics", ]
+  expect_equal(m$complete, 1L)                 # bootstrap_complete=TRUE -> 1
+  expect_equal(m$db_bytes, 1162678272)
+  expect_equal(m$db_sha256, "b4c719d0deadbeef")
+
+  f <- df[df$pipeline == "cran-feed", ]
+  expect_true(is.na(f$complete))               # no manifest -> honest NA
+  expect_equal(f$db_bytes, 4096)
+  expect_equal(f$db_sha256, "abc123")
+})
+
+test_that("build yields honest NA integrity when a source contributed no file", {
+  fetched <- list("cran-queue" = list(
+    cfg = list(name = "cran-queue", repo = "r", schedule = "s", max_age_h = 3L,
+               rolling = FALSE, manifest = FALSE, db_filename = "queue.db"),
+    release = list(tag = "v1", published_at = "2026-07-14T00:00:00Z"),
+    manifest = NULL, upstream = NULL,
+    integrity = list(bytes = NA_real_, sha256 = NA_character_)))
+  df <- build_pipeline_metadata(fetched, "2026-07-14T08:00:00Z")
+  expect_true(is.na(df$db_bytes[1]))           # never a coerced 0
+  expect_true(is.na(df$db_sha256[1]))
+  expect_true(is.na(df$complete[1]))
+})
+
+test_that("write_pipeline_metadata persists integrity + completeness columns", {
+  fetched <- list("cran-code-metrics" = list(
+    cfg = list(name = "cran-code-metrics", repo = "r", schedule = "s", max_age_h = 30L,
+               rolling = FALSE, manifest = TRUE, manifest_file = "code-manifest.json",
+               db_filename = "cran-code-metrics.db"),
+    release = list(tag = "metrics-2026-07-14", published_at = "x"),
+    manifest = list(bootstrap = list(bootstrap_complete = TRUE)),
+    upstream = NULL,
+    integrity = list(bytes = 999, sha256 = "cafe")))
+  df <- build_pipeline_metadata(fetched, "2026-07-14T08:00:00Z")
+  con <- DBI::dbConnect(RSQLite::SQLite(), ":memory:")
+  on.exit(DBI::dbDisconnect(con))
+  write_pipeline_metadata(con, df)
+  got <- DBI::dbGetQuery(con, "SELECT db_bytes, db_sha256, complete FROM pipeline_metadata")
+  expect_equal(got$db_bytes, 999)
+  expect_equal(got$db_sha256, "cafe")
+  expect_equal(got$complete, 1L)
+})
