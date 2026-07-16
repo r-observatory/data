@@ -94,7 +94,7 @@ test_that("vcs-signals is registered in both merger lists", {
   expect_true("vcs-signals-summary.db" %in% source_dbs)
   expect_equal(
     tables_to_merge_from("vcs-signals-summary.db", source_tables),
-    c("vcs_signals_summary")
+    c("vcs_signals_summary", "vcs_ai_signals")
   )
 })
 
