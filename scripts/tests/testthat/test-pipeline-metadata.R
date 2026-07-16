@@ -174,6 +174,164 @@ test_that("write_pipeline_metadata persists integrity + completeness columns", {
   expect_equal(got$complete, 1L)
 })
 
+test_that("build sets verified=1 when the manifest's declared sha matches the computed one", {
+  fetched <- list("cran-downloads" = list(
+    cfg = list(name = "cran-downloads", repo = "r-observatory/cran-downloads",
+               schedule = "daily 07:00 UTC", max_age_h = 30L, rolling = TRUE,
+               manifest = TRUE, db_filename = "downloads-summary.db"),
+    release = list(tag = "current", published_at = "2026-07-14T00:00:00Z"),
+    manifest = list(db_sha256 = "AbC123", complete = TRUE),
+    upstream = NULL,
+    # Computed hash differs only in case -> still a match (hex is case-insensitive).
+    integrity = list(bytes = 4096, sha256 = "abc123")))
+  df <- build_pipeline_metadata(fetched, "2026-07-14T08:00:00Z")
+  expect_equal(df$verified[1], 1L)
+})
+
+test_that("build sets verified=0 AND emits a loud warning when declared != computed", {
+  fetched <- list("cran-downloads" = list(
+    cfg = list(name = "cran-downloads", repo = "r-observatory/cran-downloads",
+               schedule = "daily 07:00 UTC", max_age_h = 30L, rolling = TRUE,
+               manifest = TRUE, db_filename = "downloads-summary.db"),
+    release = list(tag = "current", published_at = "2026-07-14T00:00:00Z"),
+    manifest = list(db_sha256 = "declared-aaaa", complete = TRUE),
+    upstream = NULL,
+    integrity = list(bytes = 4096, sha256 = "computed-bbbb")))
+  # The warning names the pipeline and both hashes so it is visible in the CI log.
+  expect_message(
+    df <- build_pipeline_metadata(fetched, "2026-07-14T08:00:00Z"),
+    "cran-downloads.*declared-aaaa.*computed-bbbb")
+  expect_equal(df$verified[1], 0L)
+})
+
+test_that("build leaves verified=NA when the manifest declares no sha (not-yet-republished / no manifest)", {
+  fetched <- list(
+    # Manifest present but without db_sha256 (a source mid-rollout).
+    "cran-coverage" = list(
+      cfg = list(name = "cran-coverage", repo = "r-observatory/cran-coverage",
+                 schedule = "every 6 hours", max_age_h = 8L, rolling = TRUE,
+                 manifest = TRUE, db_filename = "cran-coverage.db"),
+      release = list(tag = "current", published_at = "2026-07-14T00:00:00Z"),
+      manifest = list(processed = 941, remaining = 23000),
+      upstream = NULL,
+      integrity = list(bytes = 4096, sha256 = "abc123")),
+    # No manifest at all: also honest-NA, not a mismatch.
+    "cran-feed" = list(
+      cfg = list(name = "cran-feed", repo = "r-observatory/cran-feed",
+                 schedule = "every 6 hours", max_age_h = 8L, rolling = FALSE,
+                 manifest = FALSE, db_filename = "feed.db"),
+      release = list(tag = "v1", published_at = "2026-07-14T00:00:00Z"),
+      manifest = NULL, upstream = NULL,
+      integrity = list(bytes = 4096, sha256 = "abc123")))
+  # No mismatch means no warning is emitted for either row.
+  expect_no_message(df <- build_pipeline_metadata(fetched, "2026-07-14T08:00:00Z"))
+  expect_true(is.na(df$verified[df$pipeline == "cran-coverage"]))
+  expect_true(is.na(df$verified[df$pipeline == "cran-feed"]))
+})
+
+test_that("is_scalar_str accepts only a length-1, non-NA, non-empty character string", {
+  expect_true(is_scalar_str("abc123"))
+  expect_false(is_scalar_str(NULL))
+  expect_false(is_scalar_str(list()))            # JSON [] via simplifyVector = FALSE
+  expect_false(is_scalar_str(list("a", "b")))    # multi-element JSON array
+  expect_false(is_scalar_str(list("abc")))       # single-element array is still not a scalar string
+  expect_false(is_scalar_str(character(0)))
+  expect_false(is_scalar_str(c("a", "b")))       # multi-element character vector
+  expect_false(is_scalar_str(NA_character_))
+  expect_false(is_scalar_str(""))
+  expect_false(is_scalar_str(123))               # non-character scalar
+})
+
+test_that("compute_verified: the crash cases (list()/multi-element/empty string) degrade to NA, never error", {
+  expect_true(is.na(compute_verified(list(), "abc123")))          # db_sha256: []
+  expect_true(is.na(compute_verified(list("a", "b"), "abc123")))  # db_sha256: ["a","b"]
+  expect_true(is.na(compute_verified("", "abc123")))              # db_sha256: ""
+})
+
+test_that("compute_verified: present-and-scalar matches/differs, and honest-NA when either side is unusable", {
+  expect_equal(compute_verified("AbC123", "abc123"), 1L)   # case-insensitive match
+  expect_equal(compute_verified("aaaa", "bbbb"), 0L)       # present-and-scalar, differs
+  expect_true(is.na(compute_verified(NULL, "abc123")))     # no declared sha at all
+  expect_true(is.na(compute_verified("abc123", NA_character_)))  # declared present, computed sha missing
+  expect_true(is.na(compute_verified("abc123", NULL)))     # declared present, no computed sha
+})
+
+test_that("build degrades verified to NA (never errors) when a manifest emits a malformed db_sha256", {
+  base_cfg <- list(name = "cran-downloads", repo = "r-observatory/cran-downloads",
+                    schedule = "daily 07:00 UTC", max_age_h = 30L, rolling = TRUE,
+                    manifest = TRUE, db_filename = "downloads-summary.db")
+  make <- function(db_sha256) list("cran-downloads" = list(
+    cfg = base_cfg,
+    release = list(tag = "current", published_at = "2026-07-14T00:00:00Z"),
+    manifest = list(db_sha256 = db_sha256, complete = TRUE),
+    upstream = NULL,
+    integrity = list(bytes = 4096, sha256 = "abc123")))
+
+  # db_sha256: [] parsed with simplifyVector = FALSE -> list().
+  expect_no_message(df <- build_pipeline_metadata(make(list()), "2026-07-14T08:00:00Z"))
+  expect_true(is.na(df$verified[1]))
+
+  # db_sha256: ["a", "b"] (multi-element array).
+  expect_no_message(df <- build_pipeline_metadata(make(list("a", "b")), "2026-07-14T08:00:00Z"))
+  expect_true(is.na(df$verified[1]))
+
+  # db_sha256: "" (empty string).
+  expect_no_message(df <- build_pipeline_metadata(make(""), "2026-07-14T08:00:00Z"))
+  expect_true(is.na(df$verified[1]))
+})
+
+test_that("write_pipeline_metadata persists the verified column", {
+  fetched <- list("cran-downloads" = list(
+    cfg = list(name = "cran-downloads", repo = "r", schedule = "s", max_age_h = 30L,
+               rolling = TRUE, manifest = TRUE, db_filename = "downloads-summary.db"),
+    release = list(tag = "current", published_at = "x"),
+    manifest = list(db_sha256 = "abc", complete = TRUE),
+    upstream = NULL,
+    integrity = list(bytes = 4096, sha256 = "abc")))
+  df <- build_pipeline_metadata(fetched, "2026-07-14T08:00:00Z")
+  con <- DBI::dbConnect(RSQLite::SQLite(), ":memory:")
+  on.exit(DBI::dbDisconnect(con))
+  write_pipeline_metadata(con, df)
+  got <- DBI::dbGetQuery(con, "SELECT verified FROM pipeline_metadata")
+  expect_equal(got$verified, 1L)
+})
+
+test_that("pipeline_config includes the newly-folded-in sources with the merge's db_filenames", {
+  cfgs <- pipeline_config()
+  by_name <- setNames(cfgs, vapply(cfgs, function(c) c$name, character(1)))
+  expected <- c(
+    "bioconductor-downloads" = "bioconductor-summary.db",
+    "bioconductor-metadata"  = "bioconductor-metadata.db",
+    "cran-archive"           = "cran-archive.db",
+    "cran-coverage"          = "cran-coverage.db",
+    "cran-task-views"        = "cran-task-views.db")
+  for (nm in names(expected)) {
+    expect_true(nm %in% names(by_name), info = nm)
+    entry <- by_name[[nm]]
+    expect_equal(entry$db_filename, expected[[nm]], info = nm)
+    expect_true(isTRUE(entry$rolling), info = nm)   # all use the rolling `current` tag
+    expect_true(isTRUE(entry$manifest), info = nm)  # all publish a manifest.json
+  }
+})
+
+test_that("build produces a row per config entry, including the new sources (honest-NA when unresolved)", {
+  cfgs <- pipeline_config()
+  # Minimal fetched skeleton for every configured pipeline (no manifest/integrity).
+  fetched <- setNames(lapply(cfgs, function(cfg) list(
+    cfg = cfg, release = NULL, manifest = NULL, upstream = NULL,
+    integrity = list(bytes = NA_real_, sha256 = NA_character_))),
+    vapply(cfgs, function(c) c$name, character(1)))
+  df <- build_pipeline_metadata(fetched, "2026-07-14T08:00:00Z")
+  expect_equal(nrow(df), length(cfgs))
+  for (nm in c("bioconductor-downloads", "bioconductor-metadata",
+               "cran-archive", "cran-coverage", "cran-task-views")) {
+    row <- df[df$pipeline == nm, ]
+    expect_equal(nrow(row), 1L, info = nm)
+    expect_true(is.na(row$verified), info = nm)   # no declared sha yet -> honest NA
+    expect_true(is.na(row$complete), info = nm)   # no completeness flag yet -> honest NA
+  }
+})
+
 test_that("sha256_file/db_integrity: real file yields correct size+hash, missing file yields NA/NA", {
   # sha256_file() on an arbitrary path, checked against an independent (shell
   # utility) sha256 computation rather than re-deriving via the same code path.

@@ -54,6 +54,31 @@ pipeline_config <- function() {
     list(name = "vcs-signals",    repo = "r-observatory/vcs-signals",
          schedule = "daily 06:30 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE,
          db_filename = "vcs-signals-summary.db"),
+    # Sources the merge already downloads (merge.yml's repo_db_map -> sources/)
+    # but that were previously absent from this freshness/integrity surface.
+    # Each publishes to a rolling `current` release, but not every source has
+    # shipped a manifest.json yet: cran-task-views' current release has none
+    # as of writing (it ships on that source's next run). Until a source
+    # (re)publishes a manifest with db_sha256/complete, those fields come
+    # through as honest NA. db_filename mirrors the sources/<file> the merge
+    # lands (see repo_db_map in merge.yml).
+    list(name = "bioconductor-downloads", repo = "r-observatory/bioconductor-downloads",
+         schedule = "daily 06:00 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE,
+         db_filename = "bioconductor-summary.db"),
+    list(name = "bioconductor-metadata", repo = "r-observatory/bioconductor-metadata",
+         schedule = "daily 06:00 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE,
+         db_filename = "bioconductor-metadata.db"),
+    list(name = "cran-archive",   repo = "r-observatory/cran-archive",
+         schedule = "daily 05:00 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE,
+         db_filename = "cran-archive.db"),
+    # cran-coverage runs a budget-bounded, resumable crawl on an every-6h cron
+    # (mirrors the every-6h cran-feed sibling for schedule/max_age_h).
+    list(name = "cran-coverage",  repo = "r-observatory/cran-coverage",
+         schedule = "every 6 hours",   max_age_h = 8L,    rolling = TRUE,  manifest = TRUE,
+         db_filename = "cran-coverage.db"),
+    list(name = "cran-task-views", repo = "r-observatory/cran-task-views",
+         schedule = "daily 06:00 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE,
+         db_filename = "cran-task-views.db"),
     # Metrics pipelines ship a metrics-style manifest (code-manifest.json) that
     # carries bootstrap.bootstrap_complete, and publish to a dated `metrics-*`
     # release marked latest (not a rolling `current` tag). Each also ships a
@@ -112,6 +137,34 @@ manifest_complete <- function(man) {
   NA_integer_
 }
 
+#' TRUE iff `x` is a length-1, non-NA, non-empty character string.
+#'
+#' Guards content-verification against externally-sourced manifest fields
+#' (~16 independently-maintained sibling repos) that may not be the plain
+#' scalar string the schema expects: NULL, `list()` (a JSON `[]` parsed with
+#' `simplifyVector = FALSE`), a multi-element list/vector, a non-character
+#' scalar, NA, or "". `is.character()`/`length()` always return a single
+#' logical regardless of `x`'s shape, so this predicate itself cannot throw
+#' the `'length = 2' in coercion to 'logical(1)'` / "missing value where
+#' TRUE/FALSE needed" errors that a naive `&&` chain over `x` directly would.
+is_scalar_str <- function(x) {
+  is.character(x) && length(x) == 1L && !is.na(x) && nzchar(x)
+}
+
+#' Content-verification result: compare a manifest's declared file sha256
+#' against the sha256 computed from the merged-in file.
+#'   1L  declared present-and-scalar AND matches computed
+#'   0L  declared present-and-scalar AND differs from computed
+#'   NA  declared absent/malformed (not-yet-republished source, or a
+#'       malformed field: `list()`, a multi-element array, a non-character
+#'       scalar, NA, or ""), or no usable computed sha to compare against
+#' Mirrors `manifest_complete()`'s defensive, honest-NA pattern: any input
+#' shape that isn't recognized falls through to NA rather than erroring.
+compute_verified <- function(declared, computed) {
+  if (!is_scalar_str(declared) || !is_scalar_str(computed)) return(NA_integer_)
+  if (identical(tolower(declared), tolower(computed))) 1L else 0L
+}
+
 #' Build the pipeline_metadata data.frame from already-fetched per-pipeline data.
 #'
 #' @param fetched named list keyed by pipeline name; each entry is
@@ -143,6 +196,35 @@ build_pipeline_metadata <- function(fetched, now_iso) {
       behind <- as.integer(!identical(man$upstream_head_sha, up$latest_sha))
     }
 
+    # Content verification: compare the manifest's DECLARED file sha256
+    # (`db_sha256`, the standardized field the sources now publish) against the
+    # sha256 we COMPUTED from the merged-in file (sources/<db_filename>), via
+    # compute_verified()/is_scalar_str() above.
+    #   verified = 1  declared present-and-scalar AND matches computed
+    #   verified = 0  declared present-and-scalar AND differs from computed
+    #                 (loud warning)
+    #   verified = NA declared absent or malformed (not-yet-republished
+    #                 source, or a `db_sha256` that isn't a plain scalar
+    #                 string), or no computed sha to compare against (an
+    #                 absent/torn file is already surfaced by NA db_bytes +
+    #                 the merge's byte-size guard, so we do not assert a
+    #                 content "mismatch" we cannot actually check). Honest
+    #                 unknown, never a coerced value and never an error.
+    # This is a VISIBILITY layer only: during the incremental rollout a source
+    # can publish its .db and manifest a moment apart, so a transient manifest/db
+    # sha race must NOT break the daily merge. A mismatch warns; it never stops.
+    # NOTE: the metrics repos' manifest `fingerprint` is a content-derived hash,
+    # NOT the sha256 of the DB file (empirically confirmed), so it is deliberately
+    # not used as a fallback; only `db_sha256` is trusted for file verification.
+    declared_sha <- man$db_sha256
+    computed_sha <- f$integrity$sha256
+    verified <- compute_verified(declared_sha, computed_sha)
+    if (identical(verified, 0L)) {
+      message(sprintf(
+        "::warning:: pipeline_metadata content mismatch [%s]: manifest db_sha256=%s but computed file sha256=%s (surfaced for visibility; merge NOT failed)",
+        cfg$name, declared_sha, computed_sha))
+    }
+
     data.frame(
       pipeline               = cfg$name,
       repo                   = cfg$repo,
@@ -165,6 +247,9 @@ build_pipeline_metadata <- function(fetched, now_iso) {
       db_bytes               = as.numeric(f$integrity$bytes %||% NA_real_),
       db_sha256              = f$integrity$sha256 %||% NA_character_,
       complete               = manifest_complete(man),
+      # 1 = manifest's declared file sha256 matches the computed one, 0 = differs
+      # (a warning was emitted above), NA = no declared sha to check against.
+      verified               = verified,
       stringsAsFactors       = FALSE
     )
   })
@@ -194,7 +279,8 @@ write_pipeline_metadata <- function(con, df) {
     fetched_at             TEXT,
     db_bytes               INTEGER,
     db_sha256              TEXT,
-    complete               INTEGER)")
+    complete               INTEGER,
+    verified               INTEGER)")
   if (nrow(df) > 0) DBI::dbWriteTable(con, "pipeline_metadata", df, append = TRUE)
   invisible(NULL)
 }
