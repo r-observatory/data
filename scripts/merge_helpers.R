@@ -87,7 +87,7 @@ source_tables <- list(
   "bioc-code-metrics.db"         = c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges"),
   "bioc-data-metrics.db"         = c("bioc_datasets", "bioc_dataset_versions", "bioc_dataset_contents"),
   "cran-coverage.db"             = c("coverage_summary", "coverage_file", "coverage_function"),
-  "vcs-signals-summary.db"       = c("vcs_signals_summary", "vcs_ai_signals"),
+  "vcs-signals-summary.db"       = c("vcs_signals_summary", "vcs_ai_signals", "vcs_dev_tooling"),
   "cran-task-views.db"           = c("cran_task_views", "cran_task_view_events", "cran_task_view_membership")
 )
 
