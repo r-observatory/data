@@ -188,8 +188,15 @@ build_pipeline_metadata <- function(fetched, now_iso) {
     run_at <- if (length(run_candidates)) max(run_candidates) else NA_character_
 
     released_at  <- if (isTRUE(cfg$self)) now_iso else (rel$published_at %||% NA_character_)
-    last_checked <- if (isTRUE(cfg$self)) now_iso else (man$last_checked %||% run_at)
-    last_changed <- if (isTRUE(cfg$self)) now_iso else (man$last_changed %||% run_at)
+    # Prefer the manifest's own timestamps; fall back to its generated_at (the
+    # run that produced it) before the coarse run_at proxy. This keeps a pipeline
+    # fresh when it clobbers a rolling 'current' release (frozen published_at)
+    # and does not commit each run -- e.g. cran-coverage, which otherwise looked
+    # days stale despite refreshing every run.
+    last_checked <- if (isTRUE(cfg$self)) now_iso else
+      (man$last_checked %||% man$generated_at %||% run_at)
+    last_changed <- if (isTRUE(cfg$self)) now_iso else
+      (man$last_changed %||% man$generated_at %||% run_at)
 
     behind <- NA_integer_
     if (!is.null(cfg$upstream) && !is.null(up) && !is.null(man$upstream_head_sha)) {

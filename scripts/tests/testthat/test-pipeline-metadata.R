@@ -369,3 +369,24 @@ test_that("sha256_file/db_integrity: real file yields correct size+hash, missing
   expect_true(is.na(missing$bytes))
   expect_true(is.na(missing$sha256))
 })
+
+test_that("build falls back to manifest generated_at when last_checked is absent", {
+  # A rolling 'current' pipeline that clobbers its release (frozen published_at)
+  # and does not commit each run: its manifest carries generated_at but no
+  # last_checked/last_changed. Freshness must track generated_at, not the stale
+  # release/commit time. (cran-coverage was showing 2-day-stale for this reason.)
+  fetched <- list(
+    "cran-coverage" = list(
+      cfg = list(name = "cran-coverage", repo = "r-observatory/cran-coverage",
+                 schedule = "every 6 hours", max_age_h = 8L, manifest = TRUE),
+      release     = list(tag = "current", published_at = "2026-07-04T23:24:36Z"),
+      repo_commit = "2026-07-16T01:13:48Z",
+      manifest    = list(generated_at = "2026-07-18T06:28:34Z"),
+      upstream    = NULL
+    )
+  )
+  df  <- build_pipeline_metadata(fetched, now_iso = "2026-07-18T08:00:00Z")
+  row <- df[df$pipeline == "cran-coverage", ]
+  expect_equal(row$last_checked, "2026-07-18T06:28:34Z")
+  expect_equal(row$last_changed, "2026-07-18T06:28:34Z")
+})
