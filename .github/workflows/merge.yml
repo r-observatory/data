@@ -4,9 +4,15 @@ on:
   schedule:
     - cron: "0 8 * * *"
   workflow_dispatch:
+    inputs:
+      ignore_freshness_gate:
+        description: "Publish even if a fatal source fails the freshness gate. The run still fails."
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: write   # release create/delete
+  issues: write     # the failure notification opens or comments on one issue
 
 concurrency:
   group: observatory-merge
@@ -171,7 +177,24 @@ jobs:
                 ;;
             esac
 
-            if "${download_cmd[@]}" 2>/dev/null; then
+            # Retry on the same 3-attempt backoff verify_size uses. A source
+            # that is absent because one HTTPS call hiccuped is indistinguishable
+            # downstream from a source whose release genuinely has no asset, and
+            # for feed.db and metadata.db the second of those refuses the whole
+            # release. Clear any partial write first, since gh release download
+            # refuses to overwrite a file it already fetched.
+            dl_ok=""
+            dl_backoffs=(2 4)
+            for attempt in 1 2 3; do
+              if "${download_cmd[@]}" 2>/dev/null; then dl_ok=yes; break; fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "  Warning: download from r-observatory/$repo failed (attempt $attempt/3), retrying..."
+                find "$tmpdir" -mindepth 1 -delete 2>/dev/null || true
+                sleep "${dl_backoffs[$((attempt - 1))]}"
+              fi
+            done
+
+            if [ -n "$dl_ok" ]; then
               # Find the downloaded .db file and rename to expected name
               downloaded=$(find "$tmpdir" -name "*.db" -type f | head -1)
               if [ -n "$downloaded" ]; then
@@ -185,7 +208,7 @@ jobs:
                 echo "  Warning: No .db file found in release for $repo"
               fi
             else
-              echo "  Warning: Could not download release from r-observatory/$repo"
+              echo "  Warning: Could not download release from r-observatory/$repo after 3 attempts"
             fi
 
             rm -rf "$tmpdir"
@@ -204,6 +227,10 @@ jobs:
                 echo "  $(basename $db): OK"
               else
                 echo "  $(basename $db): FAILED integrity check, removing"
+                # Record the removal so the freshness gate can tell a corrupt
+                # source from one that simply never published. Without this the
+                # two are identical by the time merge.R runs.
+                basename "$db" >> sources/.integrity-failed
                 rm -f "$db"
               fi
             fi
@@ -221,6 +248,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           Rscript scripts/collect-metadata.R observatory.db
+
+      - name: Check source freshness
+        env:
+          GATE_OVERRIDE: ${{ inputs.ignore_freshness_gate }}
+        run: |
+          # Runs before anything is compressed, deleted or published, so a
+          # fatal verdict costs nothing. Only a source whose loss breaks the
+          # site stops the release here; everything else is recorded in
+          # merge-gate-failed and reddens the run after publishing.
+          Rscript scripts/check-freshness.R observatory.db sources
 
       - name: Compress database for release
         run: |
@@ -259,14 +296,101 @@ jobs:
 
           gh release create "$TAG" \
             observatory.db.zst \
-            --title "Observatory DB — $(date -u +%Y-%m-%d)" \
+            --title "Observatory DB - $(date -u +%Y-%m-%d)" \
             --notes-file release_notes.md \
             --latest
 
+          # Marker for the failure notification, so it can say whether the site
+          # got data today rather than only that something went wrong.
+          echo "$TAG" > release-published
+
       - name: Trigger viewer deploy
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.VIEWER_DEPLOY_TOKEN }}
         run: |
+          # This step used to swallow its own failure, and so reported success
+          # for thirteen consecutive runs while dispatching nothing: the secret
+          # does not exist and an empty GH_TOKEN makes gh fail quietly. The
+          # release above is already published, so failing here costs no data.
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::VIEWER_DEPLOY_TOKEN is not set on r-observatory/data, so repos/r-observatory/viewer/dispatches was never called and the viewer was not redeployed. Today's release WAS published. Add a repository secret named VIEWER_DEPLOY_TOKEN holding a token with write access to r-observatory/viewer."
+            exit 1
+          fi
           gh api repos/r-observatory/viewer/dispatches \
             -f event_type=data-updated
+
+      - name: Fail the run if any source failed the gate
+        if: '!cancelled()'
+        run: |
+          # The non-fatal half of the gate. By the time this runs the release
+          # either shipped or was refused earlier; either way this step only
+          # reddens the run so the notification below fires. It never blocks a
+          # release.
+          if [ -f merge-gate-failed ]; then
+            echo "::error::At least one source failed the freshness gate:"
+            cat merge-gate-failed
+            exit 1
+          fi
+          echo "No source failed the freshness gate."
+
+      - name: Report failure as an issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # One issue, not one per day: the title carries no date, so a week of
+          # failures becomes a week of comments on a single thread.
+          TITLE="[Merge failure] Merge Observatory Databases"
+
+          # gh issue create rejects an unknown label, so make sure it exists.
+          # --force is a no-op update when it already does.
+          gh label create workflow-failure \
+            --repo "$GITHUB_REPOSITORY" \
+            --color d73a4a \
+            --description "The daily merge workflow failed" \
+            --force || true
+
+          {
+            # Lead with whether the site got data today. Every other line is
+            # detail; this one is the difference between an outage and a
+            # degraded but published run, and a reader must not have to open
+            # the Actions tab to tell them apart.
+            if [ -f merge-gate-refused ]; then
+              echo "NO RELEASE WAS PUBLISHED today: a source the site cannot function without failed the gate."
+            elif [ ! -f release-published ]; then
+              echo "NO RELEASE WAS PUBLISHED today: the run failed before the release was created (see the run for which step)."
+            elif [ -f merge-gate-failed ]; then
+              echo "Today's release WAS published, but at least one source is degraded."
+            else
+              echo "Today's release WAS published; the merge job failed after publishing (see the run for which step)."
+            fi
+            echo
+            echo "Run: $RUN_URL"
+            echo "Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            if [ -f merge-gate-failed ]; then
+              echo "Sources that failed the freshness gate:"
+              echo
+              sed 's/^/- /' merge-gate-failed
+              echo
+            fi
+            echo "The run summary carries the full per-source verdict table."
+          } > issue-body.md
+
+          # A lookup that fails (rate limit, transient 5xx) must not abort the
+          # step under `bash -e` and drop the notification entirely. A duplicate
+          # thread once in a blue moon is far cheaper than silence on the day
+          # the merge broke.
+          NUM=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+                  --label workflow-failure --json number,title \
+                  --jq "[.[] | select(.title == \"$TITLE\")] | .[0].number // empty") || NUM=""
+
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" --body-file issue-body.md
+            echo "Commented on existing issue #$NUM"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" --body-file issue-body.md \
+              --label workflow-failure
+          fi
