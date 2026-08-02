@@ -94,7 +94,8 @@ test_that("vcs-signals is registered in both merger lists", {
   expect_true("vcs-signals-summary.db" %in% source_dbs)
   expect_equal(
     tables_to_merge_from("vcs-signals-summary.db", source_tables),
-    c("vcs_signals_summary", "vcs_ai_signals", "vcs_dev_tooling")
+    c("vcs_signals_summary", "vcs_ai_signals", "vcs_dev_tooling",
+      "vcs_ai_models", "vcs_ai_rule_inventory", "vcs_ai_silent_channels")
   )
 })
 
@@ -133,4 +134,14 @@ test_that("missing_expected_tables flags a dropped table only when the source wa
   expect_identical(missing_expected_tables(FALSE, c("a", "b"), c("a")), character(0))
   expect_identical(missing_expected_tables(TRUE,  c("a", "b"), c("a")), "b")
   expect_identical(missing_expected_tables(TRUE,  c("a", "b"), c("a", "b")), character(0))
+})
+
+test_that("an allowlisted table absent from a source is skipped, not an error", {
+  # The three new vcs tables will not exist in the published asset until the
+  # producer has run once with them. The merge must tolerate that rather than
+  # redden every daily run in the meantime.
+  allow <- tables_to_merge_from("vcs-signals-summary.db", source_tables)
+  present <- c("vcs_signals_summary", "vcs_ai_signals")   # an older asset
+  expect_equal(intersect(present, allow), present)
+  expect_true(length(setdiff(allow, present)) > 0)        # the rest simply do not copy
 })

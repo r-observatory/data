@@ -87,7 +87,14 @@ source_tables <- list(
   "bioc-code-metrics.db"         = c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges", "bioc_code_churn"),
   "bioc-data-metrics.db"         = c("bioc_datasets", "bioc_dataset_versions", "bioc_dataset_contents"),
   "cran-coverage.db"             = c("coverage_summary", "coverage_file", "coverage_function"),
-  "vcs-signals-summary.db"       = c("vcs_signals_summary", "vcs_ai_signals", "vcs_dev_tooling"),
+  # vcs_ai_models is one row per repo per tool per model; vcs_ai_rule_inventory
+  # states each tier's breadth so a page reads the denominator instead of
+  # asserting it; vcs_ai_silent_channels says which channels found nothing
+  # anywhere and whether anyone has explained it, so a quiet channel can render
+  # as "not measured" rather than as a confident zero.
+  "vcs-signals-summary.db"       = c("vcs_signals_summary", "vcs_ai_signals", "vcs_dev_tooling",
+                                     "vcs_ai_models", "vcs_ai_rule_inventory",
+                                     "vcs_ai_silent_channels"),
   "cran-task-views.db"           = c("cran_task_views", "cran_task_view_events", "cran_task_view_membership")
 )
 
