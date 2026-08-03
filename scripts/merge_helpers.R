@@ -82,7 +82,11 @@ source_tables <- list(
   # The dataset row_sketch table is deliberately EXCLUDED: it is an offline
   # near-duplicate structure that the viewer never queries, so it stays in the
   # source db and does not inflate observatory.db.
-  "cran-code-metrics.db"         = c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_code_churn", "cran_archived_meta", "cran_author_package_span"),
+  # cran_vignettes is one row per vignette per version: which ones a package
+  # ships, what they render to, and who wrote them. The summary's n_vignettes
+  # counts the same rows, so a page can show the count without this table and
+  # can name the vignettes only with it.
+  "cran-code-metrics.db"         = c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_code_churn", "cran_archived_meta", "cran_author_package_span", "cran_vignettes"),
   "cran-data-metrics.db"         = c("cran_datasets", "cran_dataset_versions", "cran_dataset_contents"),
   "bioc-code-metrics.db"         = c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges", "bioc_code_churn"),
   "bioc-data-metrics.db"         = c("bioc_datasets", "bioc_dataset_versions", "bioc_dataset_contents"),

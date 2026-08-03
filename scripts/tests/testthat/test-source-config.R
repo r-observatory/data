@@ -26,7 +26,7 @@ test_that("cran-coverage.db is registered in both merger lists", {
 test_that("code-metrics DBs expose summary, api_history and detail tables", {
   expect_equal(
     tables_to_merge_from("cran-code-metrics.db", source_tables),
-    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_code_churn", "cran_archived_meta", "cran_author_package_span")
+    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_code_churn", "cran_archived_meta", "cran_author_package_span", "cran_vignettes")
   )
   expect_equal(
     tables_to_merge_from("bioc-code-metrics.db", source_tables),
@@ -44,7 +44,7 @@ test_that("code-metrics DBs carry code tables (plus cran archived metadata) afte
   # cran_archived_meta table that powers removed-package detail pages.
   expect_equal(
     tables_to_merge_from("cran-code-metrics.db", source_tables),
-    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_code_churn", "cran_archived_meta", "cran_author_package_span")
+    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_code_churn", "cran_archived_meta", "cran_author_package_span", "cran_vignettes")
   )
   expect_equal(
     tables_to_merge_from("bioc-code-metrics.db", source_tables),
@@ -144,4 +144,13 @@ test_that("an allowlisted table absent from a source is skipped, not an error", 
   present <- c("vcs_signals_summary", "vcs_ai_signals")   # an older asset
   expect_equal(intersect(present, allow), present)
   expect_true(length(setdiff(allow, present)) > 0)        # the rest simply do not copy
+})
+
+
+test_that("the vignette table is carried, because only it names the vignettes", {
+  # cran_code_summary carries n_vignettes, so a page can say how many without
+  # this table. Naming them, saying what they render to, or saying who wrote
+  # them needs the rows themselves.
+  allow <- tables_to_merge_from("cran-code-metrics.db", source_tables)
+  expect_true("cran_vignettes" %in% allow)
 })
