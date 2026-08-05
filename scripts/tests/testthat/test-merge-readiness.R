@@ -80,37 +80,56 @@ test_that("nothing new since the last merge means nothing to publish", {
              list(name = "vcs-signals",    at = "2026-08-05T10:54:00Z"))
   res <- merge_readiness(meta, last_merge_at = "2026-08-05T11:30:00Z", now_iso = NOW)
   expect_false(res$should_merge)
-  expect_match(res$reason, "no source has published since the last merge")
+  expect_match(res$reason, "no daily source has published since the last merge")
 })
 
-test_that("the hourly check does not merge once per fast source", {
-  # cran-queue is hourly and cran-coverage every six hours. Without a floor the
-  # hourly readiness check would publish, and redeploy the site, on each one.
-  meta <- mk(list(name = "cran-queue",    max_age = 3L,  at = "2026-08-05T11:55:00Z"),
-             list(name = "cran-coverage", max_age = 8L,  at = "2026-08-05T11:40:00Z"))
-  res <- merge_readiness(meta, last_merge_at = "2026-08-05T09:00:00Z", now_iso = NOW,
-                         cooldown_h = 6)
+test_that("an intraday source ticking is not a reason to merge and redeploy", {
+  # cran-queue is hourly and cran-coverage every six hours. Triggering on those
+  # would rebuild and redeploy the site several times a day for data that is
+  # already only minutes old.
+  meta <- mk(list(name = "cran-queue",    max_age = 3L, at = "2026-08-05T11:55:00Z"),
+             list(name = "cran-coverage", max_age = 8L, at = "2026-08-05T11:40:00Z"))
+  res <- merge_readiness(meta, last_merge_at = "2026-08-05T09:00:00Z", now_iso = NOW)
   expect_false(res$should_merge)
-  expect_match(res$reason, "under the 6h floor")
-
-  # And it does merge again once the floor has passed.
-  later <- merge_readiness(meta, last_merge_at = "2026-08-05T04:00:00Z", now_iso = NOW,
-                           cooldown_h = 6)
-  expect_true(later$should_merge)
+  expect_match(res$reason, "no daily source has published since the last merge")
 })
 
-test_that("the shipped cadence stays one merge a day, only better timed", {
-  # The point of this change is WHEN the merge runs, not how often. Four merges
-  # a day would mean four site deploys a day, which is a separate decision.
-  meta <- mk(list(name = "cran-queue", max_age = 3L, at = "2026-08-05T11:55:00Z"))
-  # A merge earlier the same morning must not be followed by another at midday.
-  same_day <- merge_readiness(meta, last_merge_at = "2026-08-05T02:17:00Z", now_iso = NOW)
-  expect_false(same_day$should_merge)
-  expect_match(same_day$reason, "under the 20h floor")
+test_that("a once-daily source publishing new data merges without waiting a day", {
+  # The case that stranded uGMAR 3.6.1: the merge ran at 02:17 from metrics
+  # computed before the version existed, the day's metrics landed at 06:48, and a
+  # 20h floor then blocked publishing them until 22:17. New data we already hold
+  # must not sit unpublished for the rest of the day.
+  meta <- mk(list(name = "cran-code-metrics", max_age = 30L, at = "2026-08-05T06:48:00Z"),
+             list(name = "cran-queue",        max_age = 3L,  at = "2026-08-05T11:55:00Z"))
+  res <- merge_readiness(meta, last_merge_at = "2026-08-05T02:17:00Z", now_iso = NOW)
+  expect_true(res$should_merge)
+  expect_true("cran-code-metrics" %in% res$unmerged)
+  expect_false("cran-queue" %in% res$unmerged)
+})
 
-  # A merge at yesterday's usual time does not block today's.
-  next_day <- merge_readiness(meta, last_merge_at = "2026-08-04T13:00:00Z", now_iso = NOW)
-  expect_true(next_day$should_merge)
+test_that("a once-daily source does not trigger a second merge the same day", {
+  # Cadence still lands near one merge a day, but because once-daily sources
+  # publish once, not because a timer forbids the second one.
+  meta <- mk(list(name = "cran-code-metrics", max_age = 30L, at = "2026-08-05T06:48:00Z"),
+             list(name = "cran-queue",        max_age = 3L,  at = "2026-08-05T11:55:00Z"))
+  # Already merged after metrics landed: nothing daily is newer than that merge.
+  res <- merge_readiness(meta, last_merge_at = "2026-08-05T07:30:00Z", now_iso = NOW)
+  expect_false(res$should_merge)
+  expect_equal(res$unmerged, character(0))
+})
+
+test_that("the floor is a loop guard, not a publishing delay", {
+  # It must be short enough that it never becomes the reason real data waits.
+  expect_lte(readiness_cooldown_h(), 2)
+  # New daily data exists, but we merged five minutes ago: the guard holds briefly.
+  meta <- mk(list(name = "cran-code-metrics", max_age = 30L, at = "2026-08-05T11:56:00Z"))
+  res <- merge_readiness(meta, last_merge_at = "2026-08-05T11:55:00Z", now_iso = NOW)
+  expect_false(res$should_merge)
+  expect_match(res$reason, "floor")
+
+  # And it clears quickly, rather than parking the data until tomorrow.
+  soon <- merge_readiness(meta, last_merge_at = "2026-08-05T10:30:00Z", now_iso = NOW)
+  expect_true(soon$should_merge)
 })
 
 test_that("the first ever merge is not blocked by having no previous merge", {
