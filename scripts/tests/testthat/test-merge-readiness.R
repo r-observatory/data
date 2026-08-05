@@ -15,7 +15,7 @@ mk <- function(...) {
     stringsAsFactors = FALSE)))
 }
 
-NOW <- "2026-08-05T12:00:00Z"   # midday, before the 14:00 deadline
+NOW <- "2026-08-05T19:00:00Z"   # evening: past the 18:00 hold, before the 22:00 deadline
 
 test_that("the merge runs once every daily source has published today", {
   meta <- mk(list(name = "cran-downloads", at = "2026-08-05T11:09:00Z"),
@@ -47,11 +47,11 @@ test_that("waiting is bounded, and what was late is named rather than passed ove
   meta <- mk(list(name = "cran-downloads", at = "2026-08-05T11:09:00Z"),
              list(name = "vcs-signals",    at = "2026-08-04T10:54:00Z"))
   late <- merge_readiness(meta, last_merge_at = "2026-08-04T10:44:00Z",
-                          now_iso = "2026-08-05T14:00:00Z")
+                          now_iso = "2026-08-05T22:00:00Z")
   expect_true(late$should_merge)
   expect_false(late$ready)
   expect_equal(late$not_ready, "vcs-signals")
-  expect_match(late$reason, "past 14:00 UTC")
+  expect_match(late$reason, "past 22:00 UTC")
 })
 
 test_that("a source that is not expected daily never holds the merge back", {
@@ -118,17 +118,48 @@ test_that("a once-daily source does not trigger a second merge the same day", {
   expect_equal(res$unmerged, character(0))
 })
 
+test_that("the merge holds until the day's later metrics runs have happened", {
+  # The site deploys on every merge and that deploy is billed, so there is one
+  # merge a day. Taking it as soon as the set first looks ready would capture the
+  # 04:00 code-metrics run and miss the 10:00 and 16:00 ones, which is what left
+  # writexl 2.0.0 (released 13:50) invisible until the next day.
+  meta <- mk(list(name = "cran-code-metrics", max_age = 30L, at = "2026-08-05T04:30:00Z"))
+  morning <- merge_readiness(meta, last_merge_at = "2026-08-04T18:30:00Z",
+                             now_iso = "2026-08-05T09:00:00Z")
+  expect_false(morning$should_merge)
+  expect_true(morning$ready)          # ready, and deliberately still waiting
+  expect_match(morning$reason, "holding until 18:00 UTC")
+
+  evening <- merge_readiness(meta, last_merge_at = "2026-08-04T18:30:00Z",
+                             now_iso = "2026-08-05T18:30:00Z")
+  expect_true(evening$should_merge)
+})
+
+test_that("the deadline stays reachable after the earliest hour", {
+  # A deadline at or before the earliest hour could never fire, so a stuck
+  # pipeline would hold the site indefinitely instead of being published around.
+  expect_gt(readiness_deadline_hour(), readiness_earliest_hour())
+
+  # And past the deadline it publishes even with a source still missing.
+  meta <- mk(list(name = "cran-code-metrics", max_age = 30L, at = "2026-08-05T16:10:00Z"),
+             list(name = "vcs-signals",       max_age = 30L, at = "2026-08-04T10:00:00Z"))
+  late <- merge_readiness(meta, last_merge_at = "2026-08-04T18:30:00Z",
+                          now_iso = "2026-08-05T22:30:00Z")
+  expect_true(late$should_merge)
+  expect_equal(late$not_ready, "vcs-signals")
+})
+
 test_that("the floor is a loop guard, not a publishing delay", {
   # It must be short enough that it never becomes the reason real data waits.
   expect_lte(readiness_cooldown_h(), 2)
   # New daily data exists, but we merged five minutes ago: the guard holds briefly.
-  meta <- mk(list(name = "cran-code-metrics", max_age = 30L, at = "2026-08-05T11:56:00Z"))
-  res <- merge_readiness(meta, last_merge_at = "2026-08-05T11:55:00Z", now_iso = NOW)
+  meta <- mk(list(name = "cran-code-metrics", max_age = 30L, at = "2026-08-05T18:56:00Z"))
+  res <- merge_readiness(meta, last_merge_at = "2026-08-05T18:55:00Z", now_iso = NOW)
   expect_false(res$should_merge)
   expect_match(res$reason, "floor")
 
-  # And it clears quickly, rather than parking the data until tomorrow.
-  soon <- merge_readiness(meta, last_merge_at = "2026-08-05T10:30:00Z", now_iso = NOW)
+  # And it clears in an hour, rather than parking the data until tomorrow.
+  soon <- merge_readiness(meta, last_merge_at = "2026-08-05T17:30:00Z", now_iso = NOW)
   expect_true(soon$should_merge)
 })
 
