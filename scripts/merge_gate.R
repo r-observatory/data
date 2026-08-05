@@ -127,10 +127,25 @@ gate_parse_time <- function(x) {
   s <- trimws(as.character(x))
   if (!nzchar(s)) return(NA_real_)
   s <- sub("Z$", "", s)
+  # A trailing UTC offset must be applied, not discarded. Sources publish these:
+  # vcs-signals carries "2025-07-09T12:22:43.000+02:00" shapes. Parsing the
+  # leading part and calling it UTC silently shifts the time by up to 14 hours,
+  # which can move a timestamp across a day boundary and so change the answer to
+  # "did this publish today".
+  offset_s <- 0
+  m <- regmatches(s, regexpr("[+-][0-9]{2}:?[0-9]{2}$", s))
+  if (length(m) == 1L) {
+    s <- sub("[+-][0-9]{2}:?[0-9]{2}$", "", s)
+    sign <- if (substr(m, 1, 1) == "-") -1 else 1
+    digits <- gsub("[^0-9]", "", m)
+    offset_s <- sign * (as.numeric(substr(digits, 1, 2)) * 3600 +
+                        as.numeric(substr(digits, 3, 4)) * 60)
+  }
   s <- sub("\\.[0-9]+$", "", s)
   t <- suppressWarnings(as.POSIXct(s, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC"))
   if (length(t) != 1L || is.na(t)) return(NA_real_)
-  as.numeric(t)
+  # The offset says how far the stated clock runs ahead of UTC, so subtract it.
+  as.numeric(t) - offset_s
 }
 
 #' Hours between an ISO-8601 reference time and "now", or NA if either is
