@@ -36,15 +36,24 @@ readiness_daily_max_age_h <- function() 30
 #' waiting is always bounded. Late sources are named rather than passed over.
 readiness_deadline_hour <- function() 14L
 
-#' Least time between two merges. Fast sources (cran-queue hourly, cran-feed and
-#' cran-coverage every six hours) publish repeatedly through the day, and
-#' without this the hourly check would merge on each one.
+#' Below this declared threshold a source publishes many times a day rather than
+#' once: cran-queue declares 3 (hourly), cran-feed and cran-coverage 8 (every six
+#' hours). Everything genuinely daily declares 30.
 #'
-#' Set just under a day so the cadence stays what it is today, one merge and one
-#' site deploy, with only its timing corrected. Lowering it to 6 would add
-#' intra-day refreshes from the fast sources and three more deploys a day, which
-#' is a separate decision from fixing the ordering.
-readiness_cooldown_h <- function() 20
+#' The distinction is what decides when to merge. A source publishing today is
+#' what makes the set READY. A once-daily source publishing something we have not
+#' merged is what makes a merge WORTH DOING. An hourly tick from cran-queue is
+#' neither new information about the day nor a reason to rebuild and redeploy.
+readiness_intraday_max_age_h <- function() 12
+
+#' Safety floor only, to bound a pathological loop. It is deliberately short:
+#' once-daily sources publish once, so they cannot trigger repeated merges on
+#' their own, and a long floor blocks real data instead.
+#'
+#' A 20h floor did exactly that. A merge that ran before the day's metrics were
+#' computed could not be followed by one that included them, so a new CRAN
+#' version sat computed-but-unpublished for the rest of the day.
+readiness_cooldown_h <- function() 1
 
 # --------------------------------------------------------------------------
 # Pure decision
@@ -67,10 +76,11 @@ readiness_day_start <- function(now_iso) {
 #' @param now_iso current time.
 #' @return list(should_merge, reason, ready, not_ready, newest_source_at, ...)
 merge_readiness <- function(meta, last_merge_at, now_iso,
-                            daily_max_age_h = readiness_daily_max_age_h(),
-                            deadline_hour   = readiness_deadline_hour(),
-                            cooldown_h      = readiness_cooldown_h(),
-                            self_name       = "data") {
+                            daily_max_age_h    = readiness_daily_max_age_h(),
+                            intraday_max_age_h = readiness_intraday_max_age_h(),
+                            deadline_hour      = readiness_deadline_hour(),
+                            cooldown_h         = readiness_cooldown_h(),
+                            self_name          = "data") {
   now_s   <- gate_parse_time(now_iso)
   day0    <- readiness_day_start(now_iso)
   hour    <- if (is.na(now_s)) NA_integer_ else
@@ -101,16 +111,28 @@ merge_readiness <- function(meta, last_merge_at, now_iso,
     format(as.POSIXct(newest_s, origin = "1970-01-01", tz = "UTC"), "%Y-%m-%dT%H:%M:%SZ")
 
   last_s <- gate_parse_time(last_merge_at)
-  # Nothing new since the last merge means there is nothing to publish.
-  stale <- is.na(last_s) || (!is.na(newest_s) && newest_s > last_s)
+
+  # What makes a merge worth doing is a ONCE-DAILY source carrying something we
+  # have not published. Triggering on any source would mean merging, and
+  # redeploying the site, every time cran-queue ticks. Triggering on none of them
+  # was worse: a merge that landed before the day's metrics were computed could
+  # not be followed by one that included them.
+  is_once_daily <- is_daily & !is.na(age_h) & age_h >= intraday_max_age_h
+  fresh_daily_s <- ref_s[is_once_daily]
+  fresh_daily_s <- fresh_daily_s[!is.na(fresh_daily_s)]
+  newest_daily_s <- if (length(fresh_daily_s) == 0) NA_real_ else max(fresh_daily_s)
+  trigger <- is.na(last_s) || (!is.na(newest_daily_s) && newest_daily_s > last_s)
+  unmerged <- as.character(rows$pipeline[is_once_daily & !is.na(ref_s) &
+                                         !is.na(last_s) & ref_s > last_s])
+
   since_h <- if (is.na(last_s) || is.na(now_s)) NA_real_ else (now_s - last_s) / 3600
   cooldown_ok <- is.na(since_h) || since_h >= cooldown_h
   past_deadline <- !is.na(hour) && hour >= deadline_hour
 
-  should <- stale && cooldown_ok && (ready || past_deadline)
+  should <- trigger && cooldown_ok && (ready || past_deadline)
 
-  reason <- if (!stale) {
-    "no source has published since the last merge"
+  reason <- if (!trigger) {
+    "no daily source has published since the last merge"
   } else if (!cooldown_ok) {
     sprintf("last merge was %.1fh ago, under the %gh floor", since_h, cooldown_h)
   } else if (ready) {
@@ -125,7 +147,9 @@ merge_readiness <- function(meta, last_merge_at, now_iso,
   list(should_merge = should, reason = reason, ready = ready,
        not_ready = not_ready, newest_source_at = newest_at,
        hours_since_merge = since_h, past_deadline = past_deadline,
-       daily_sources = as.character(rows$pipeline[is_daily]))
+       unmerged = unmerged,
+       daily_sources = as.character(rows$pipeline[is_daily]),
+       once_daily_sources = as.character(rows$pipeline[is_once_daily]))
 }
 
 #' Human-readable table for the run summary, so a skipped merge explains itself.
@@ -136,6 +160,8 @@ format_readiness <- function(res, now_iso) {
     sprintf("  daily sources: %d, waiting on: %s",
             length(res$daily_sources),
             if (length(res$not_ready)) paste(res$not_ready, collapse = ", ") else "none"),
+    sprintf("  published since our last merge: %s",
+            if (length(res$unmerged)) paste(res$unmerged, collapse = ", ") else "none"),
     sprintf("  newest source publish: %s", res$newest_source_at %||% "unknown"),
     sprintf("  hours since last merge: %s",
             if (is.na(res$hours_since_merge)) "no previous merge"
