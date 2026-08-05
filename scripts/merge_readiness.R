@@ -31,10 +31,21 @@
 #' c2d4u (monthly) and r2u (35 days) declare far more and so never block.
 readiness_daily_max_age_h <- function() 30
 
+#' Hour of the UTC day before which the merge does not run, even once every
+#' source is ready.
+#'
+#' The site deploys on every merge and that deploy is billed, so there is one
+#' merge a day and it has to be the one that captures the most. Sources publish
+#' across the morning and code metrics runs at 04, 10 and 16 UTC; merging as soon
+#' as the set first looks ready would take the 04:00 metrics and miss two later
+#' runs, leaving a package released at midday invisible until tomorrow.
+readiness_earliest_hour <- function() 18L
+
 #' Hour of the UTC day after which the merge stops waiting and publishes what it
 #' has. A pipeline that breaks must not be able to freeze the whole site, so
 #' waiting is always bounded. Late sources are named rather than passed over.
-readiness_deadline_hour <- function() 14L
+#' Must sit after readiness_earliest_hour, or it would never be reachable.
+readiness_deadline_hour <- function() 22L
 
 #' Below this declared threshold a source publishes many times a day rather than
 #' once: cran-queue declares 3 (hourly), cran-feed and cran-coverage 8 (every six
@@ -78,6 +89,7 @@ readiness_day_start <- function(now_iso) {
 merge_readiness <- function(meta, last_merge_at, now_iso,
                             daily_max_age_h    = readiness_daily_max_age_h(),
                             intraday_max_age_h = readiness_intraday_max_age_h(),
+                            earliest_hour      = readiness_earliest_hour(),
                             deadline_hour      = readiness_deadline_hour(),
                             cooldown_h         = readiness_cooldown_h(),
                             self_name          = "data") {
@@ -128,13 +140,21 @@ merge_readiness <- function(meta, last_merge_at, now_iso,
   since_h <- if (is.na(last_s) || is.na(now_s)) NA_real_ else (now_s - last_s) / 3600
   cooldown_ok <- is.na(since_h) || since_h >= cooldown_h
   past_deadline <- !is.na(hour) && hour >= deadline_hour
+  # An unreadable `now` leaves this permissive, though nothing rests on that:
+  # the same failure makes day0 NA, so no source counts as published today and
+  # `ready` is already FALSE. Kept so this line states a rule about the hour
+  # rather than an accident of how a bad clock happens to fail elsewhere.
+  past_earliest <- is.na(hour) || hour >= earliest_hour
 
-  should <- trigger && cooldown_ok && (ready || past_deadline)
+  should <- trigger && cooldown_ok && past_earliest && (ready || past_deadline)
 
   reason <- if (!trigger) {
     "no daily source has published since the last merge"
   } else if (!cooldown_ok) {
     sprintf("last merge was %.1fh ago, under the %gh floor", since_h, cooldown_h)
+  } else if (!past_earliest) {
+    sprintf("holding until %02d:00 UTC so the day's later runs are included",
+            earliest_hour)
   } else if (ready) {
     "every daily source has published today"
   } else if (past_deadline) {
