@@ -164,3 +164,25 @@ test_that("the workflow actually consults readiness before merging", {
                info = "readiness does not touch the merged database")
   expect_true(grepl("check-readiness.R", readiness_block, fixed = TRUE))
 })
+
+test_that("a readiness check that cannot answer does not freeze the site", {
+  # Gating the merge on this check hands it the power to stop the site updating
+  # at all, and quietly: every run green, no merge, stale data. Deciding not to
+  # merge and being unable to decide must not look the same to the merge job.
+  path <- file.path("..", "..", "..", ".github", "workflows", "merge.yml")
+  if (!file.exists(path)) skip("workflow not reachable from the test directory")
+  wf <- paste(readLines(path, warn = FALSE), collapse = "\n")
+
+  expect_true(grepl("continue-on-error: true", wf, fixed = TRUE),
+              info = "a crashing check does not fail the job outright")
+  expect_true(grepl("steps.check.outputs.should_merge || steps.fallback.outputs.should_merge",
+                    wf, fixed = TRUE),
+              info = "the job output falls through to the fallback")
+  # The fallback must not need the source metadata the check just failed to get.
+  fb <- sub("(?s)^.*Fall back when readiness could not be determined", "", wf, perl = TRUE)
+  fb <- sub("(?s)\n  merge:.*$", "", fb, perl = TRUE)
+  expect_false(grepl("check-readiness.R", fb, fixed = TRUE),
+               info = "the fallback does not re-run the thing that failed")
+  expect_true(grepl("should_merge=true", fb, fixed = TRUE),
+              info = "the fallback can still decide to merge")
+})

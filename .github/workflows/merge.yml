@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
-      should_merge: ${{ steps.check.outputs.should_merge }}
+      should_merge: ${{ steps.check.outputs.should_merge || steps.fallback.outputs.should_merge }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -50,14 +50,44 @@ jobs:
           packages: |
             any::jsonlite
 
+      # Allowed to fail. Deciding not to merge and being unable to decide are
+      # different things, and only the first should stop a run.
       - name: Check source readiness
         id: check
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # A hand dispatch is someone deciding to merge now, so readiness is
           # reported but not enforced. The schedule always enforces it.
           READINESS_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.ignore_readiness }}
         run: Rscript scripts/check-readiness.R
+
+      # Gating the merge on this check means a bug in the check can stop the
+      # site updating at all, and it would do so quietly: every run green, no
+      # merge, stale data. So when the check cannot produce an answer, fall back
+      # to the one thing that needs no source metadata, time since the last
+      # merge, and keep publishing daily.
+      - name: Fall back when readiness could not be determined
+        id: fallback
+        if: steps.check.outputs.should_merge == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          last=$(gh release view --repo ${{ github.repository }} --json publishedAt \
+                   -q .publishedAt 2>/dev/null || true)
+          if [ -z "$last" ]; then
+            echo "::warning::readiness check produced no answer and no previous release was found; merging"
+            echo "should_merge=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          age=$(( ( $(date -u +%s) - $(date -u -d "$last" +%s) ) / 3600 ))
+          echo "readiness check produced no answer; last merge was ${age}h ago"
+          if [ "$age" -ge 20 ]; then
+            echo "::warning::readiness check produced no answer; merging on age (${age}h since the last merge)"
+            echo "should_merge=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_merge=false" >> "$GITHUB_OUTPUT"
+          fi
 
   merge:
     needs: readiness
