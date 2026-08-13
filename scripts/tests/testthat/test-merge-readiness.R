@@ -17,6 +17,22 @@ mk <- function(...) {
 
 NOW <- "2026-08-05T19:00:00Z"   # evening: past the 18:00 hold, before the 22:00 deadline
 
+# The merge job's body, its `if:` condition, and its first step. Several rules
+# below are about which of the three a guarantee lives in, so reading the whole
+# workflow as one blob would let a guard drift into a place it cannot help.
+merge_job <- function(wf) sub("(?s)^.*\n  merge:\n", "", wf, perl = TRUE)
+
+merge_job_if <- function(wf) {
+  cond <- sub("(?s)^.*?\n    if: >-\n", "", merge_job(wf), perl = TRUE)
+  sub("(?s)\n    runs-on:.*$", "", cond, perl = TRUE)
+}
+
+merge_job_first_step <- function(wf) {
+  lines <- strsplit(sub("(?s)^.*?\n    steps:\n", "", merge_job(wf), perl = TRUE), "\n")[[1]]
+  heads <- grep("^      - (name|uses):", lines)
+  paste(lines[seq.int(heads[1], heads[2] - 1L)], collapse = "\n")
+}
+
 test_that("the merge runs once every daily source has published today", {
   meta <- mk(list(name = "cran-downloads", at = "2026-08-05T11:09:00Z"),
              list(name = "vcs-signals",    at = "2026-08-05T10:54:00Z"),
@@ -197,8 +213,9 @@ test_that("the workflow actually consults readiness before merging", {
   wf <- paste(readLines(path, warn = FALSE), collapse = "\n")
 
   expect_true(grepl("needs: readiness", wf, fixed = TRUE))
-  expect_true(grepl("if: needs.readiness.outputs.should_merge == 'true'", wf, fixed = TRUE),
-              info = "the merge job runs only on a MERGE verdict")
+  expect_true(grepl("needs.readiness.outputs.should_merge == 'true'",
+                    merge_job_if(wf), fixed = TRUE),
+              info = "a MERGE verdict starts the merge job")
 
   # A fixed daily hour is the thing being replaced. Hourly plus the readiness
   # gate is what makes the merge land after the pipelines rather than among
@@ -235,4 +252,106 @@ test_that("a readiness check that cannot answer does not freeze the site", {
                info = "the fallback does not re-run the thing that failed")
   expect_true(grepl("should_merge=true", fb, fixed = TRUE),
               info = "the fallback can still decide to merge")
+})
+
+test_that("a readiness JOB that dies does not skip the day either", {
+  # The previous test covers the readiness CHECK failing. The job itself dying
+  # is the same event one level up, and the fallback that answers it lived
+  # inside that job, so it died too: on 2026-08-06 readiness never got a runner,
+  # recorded zero steps, was cancelled by its own timeout, and the merge job
+  # read an empty output and skipped. No database was published that day and
+  # every job in the run reported green or skipped, so nothing surfaced it.
+  path <- file.path("..", "..", "..", ".github", "workflows", "merge.yml")
+  if (!file.exists(path)) skip("workflow not reachable from the test directory")
+  wf <- paste(readLines(path, warn = FALSE), collapse = "\n")
+  cond <- merge_job_if(wf)
+
+  expect_true(grepl("needs.readiness.result == 'cancelled'", cond, fixed = TRUE),
+              info = "a cancelled readiness job still starts the merge job")
+  expect_true(grepl("needs.readiness.result == 'failure'", cond, fixed = TRUE),
+              info = "a failed readiness job still starts the merge job")
+
+  # `always()` would also run the merge job when somebody cancels the run, and
+  # publish a release out from under them. `!cancelled()` runs after a readiness
+  # job that its own timeout cancelled but stops on a cancelled run.
+  expect_true(grepl("!cancelled()", cond, fixed = TRUE),
+              info = "a run cancelled by hand does not publish anyway")
+  expect_false(grepl("always()", cond, fixed = TRUE))
+})
+
+test_that("the merge job re-decides on age when it arrives without an answer", {
+  # Reaching the merge job no longer means readiness approved the merge, so the
+  # job must not simply merge. It applies the same rule the dead step would
+  # have: time since the last release, which needs no source metadata and no
+  # readiness job.
+  path <- file.path("..", "..", "..", ".github", "workflows", "merge.yml")
+  if (!file.exists(path)) skip("workflow not reachable from the test directory")
+  wf <- paste(readLines(path, warn = FALSE), collapse = "\n")
+  guard <- merge_job_first_step(wf)
+
+  expect_true(grepl("MERGE_FALLBACK_AGE_H", guard, fixed = TRUE),
+              info = "the first step of the merge job is the age guard")
+  expect_true(grepl("gh release view", guard, fixed = TRUE),
+              info = "the guard reads the age of the last published release")
+  expect_false(grepl("check-readiness.R", guard, fixed = TRUE),
+              info = "the guard does not re-run the thing that just died")
+  # Cheap, and before the checkout: a run that must not merge should not pay for
+  # an R toolchain and twenty database downloads to find that out.
+  expect_false(grepl("actions/checkout", guard, fixed = TRUE))
+
+  # Under the floor the job stops without merging and without failing, which is
+  # a verdict the rest of the steps have to be gated on.
+  expect_true(grepl("proceed=false", guard, fixed = TRUE))
+  expect_true(grepl("steps.gate.outputs.proceed == 'true'", merge_job(wf), fixed = TRUE))
+})
+
+test_that("the fallback age floor is written down once", {
+  # Two copies of a number that has to agree is one copy too many: the step
+  # inside the readiness job and the guard in the merge job are the same rule
+  # applied at two levels, and a run that merges by one and not the other would
+  # be very hard to read.
+  path <- file.path("..", "..", "..", ".github", "workflows", "merge.yml")
+  if (!file.exists(path)) skip("workflow not reachable from the test directory")
+  wf <- paste(readLines(path, warn = FALSE), collapse = "\n")
+
+  expect_true(grepl('MERGE_FALLBACK_AGE_H: "20"', wf, fixed = TRUE),
+              info = "the floor is defined once, at workflow level")
+  expect_false(grepl('-ge 20 ', wf, fixed = TRUE),
+               info = "no step hardcodes a second copy of the number")
+})
+
+test_that("a readiness outage is reported rather than passed over in green", {
+  # The incident cost two days because nothing in the run said anything. Losing
+  # readiness is not a state anyone chose, so it reddens the run and reaches the
+  # existing failure thread instead of getting its own mechanism.
+  path <- file.path("..", "..", "..", ".github", "workflows", "merge.yml")
+  if (!file.exists(path)) skip("workflow not reachable from the test directory")
+  wf <- paste(readLines(path, warn = FALSE), collapse = "\n")
+
+  expect_true(grepl("Fail the run when readiness could not be determined", wf, fixed = TRUE))
+  expect_true(grepl("READINESS_NOTE", merge_job(wf), fixed = TRUE),
+              info = "what happened is carried into the failure report")
+  # Anchored so the "gh issue create rejects an unknown label" comment above the
+  # label call is not counted as a second notification path.
+  expect_equal(length(grep("^ *gh issue create", strsplit(wf, "\n")[[1]])), 1L,
+               info = "one notification mechanism, not two")
+})
+
+test_that("a WAIT verdict is not overturned by the age floor", {
+  # The merge job can now be reached without an approval, so the guard has to
+  # tell "nobody decided" from "somebody decided to wait". A readiness job that
+  # answered and then failed for its own reasons still answered, and reading
+  # that as no answer would let time-since-last-release overrule the readiness
+  # decision this workflow exists to respect.
+  path <- file.path("..", "..", "..", ".github", "workflows", "merge.yml")
+  if (!file.exists(path)) skip("workflow not reachable from the test directory")
+  wf <- paste(readLines(path, warn = FALSE), collapse = "\n")
+  guard <- merge_job_first_step(wf)
+
+  expect_true(grepl('"$READINESS_ANSWER" = "false"', guard, fixed = TRUE),
+              info = "an explicit WAIT short-circuits before the age fallback")
+  # The age lookup must sit after both explicit verdicts, or it would run first
+  # and decide for them.
+  expect_lt(max(gregexpr('READINESS_ANSWER" = "', guard, fixed = TRUE)[[1]]),
+            regexpr("gh release view", guard, fixed = TRUE))
 })

@@ -24,6 +24,14 @@ permissions:
   contents: write   # release create/delete
   issues: write     # the failure notification opens or comments on one issue
 
+env:
+  # Hours since the last release after which a run publishes even though nobody
+  # could tell it whether the sources are ready. Two places apply this rule, the
+  # readiness job's own fallback step and the merge job's opening guard, because
+  # readiness can fail at the step level or at the job level and only the second
+  # of those survives its own job dying. One number so the two cannot drift.
+  MERGE_FALLBACK_AGE_H: "20"
+
 concurrency:
   group: observatory-merge
   cancel-in-progress: false
@@ -33,7 +41,14 @@ jobs:
   # pipelines have not finished. Nothing is downloaded or merged here.
   readiness:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # This is not a bound on the check, which takes about eighty seconds. It is
+    # a bound on a job that never gets a runner, and the queue wait counts
+    # against it. At 15 minutes an ordinary runner-acquisition delay was enough
+    # to trip it: on 2026-08-06 this job recorded zero steps in fifteen minutes,
+    # was killed, and took the fallback below with it. Thirty minutes clears any
+    # plausible queue while still ending a genuinely wedged job inside the hour,
+    # so the next scheduled tick is not left queueing behind it.
+    timeout-minutes: 30
     outputs:
       should_merge: ${{ steps.check.outputs.should_merge || steps.fallback.outputs.should_merge }}
     steps:
@@ -82,7 +97,7 @@ jobs:
           fi
           age=$(( ( $(date -u +%s) - $(date -u -d "$last" +%s) ) / 3600 ))
           echo "readiness check produced no answer; last merge was ${age}h ago"
-          if [ "$age" -ge 20 ]; then
+          if [ "$age" -ge "$MERGE_FALLBACK_AGE_H" ]; then
             echo "::warning::readiness check produced no answer; merging on age (${age}h since the last merge)"
             echo "should_merge=true" >> "$GITHUB_OUTPUT"
           else
@@ -91,20 +106,106 @@ jobs:
 
   merge:
     needs: readiness
-    if: needs.readiness.outputs.should_merge == 'true'
+    # A readiness job that ends cancelled or failed did not say "do not merge",
+    # it said nothing at all, and the difference has to be honoured out here as
+    # well as inside the job. The age fallback above is a STEP, so when the job
+    # died it died too: on 2026-08-06 readiness was killed by its timeout with
+    # zero steps recorded, this condition read an empty output, the merge was
+    # skipped, and no observatory.db was published for that day with every job
+    # in the run reporting green or skipped. The opening step below re-applies
+    # the same age rule from out here, where a dead readiness job cannot reach.
+    #
+    # `!cancelled()` and not `always()`: `cancelled()` is true only when the RUN
+    # was cancelled, so this still starts after a readiness job that its own
+    # timeout cancelled, while somebody cancelling the run by hand still stops
+    # the merge. `always()` would ignore them and publish a release anyway.
+    if: >-
+      !cancelled() && (
+        needs.readiness.outputs.should_merge == 'true'
+        || needs.readiness.result == 'failure'
+        || needs.readiness.result == 'cancelled'
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
+      # First, and deliberately before the checkout: reaching this job no longer
+      # means readiness approved the merge, so something has to decide, and a
+      # run that must not merge should cost one `gh release view` rather than an
+      # R toolchain and twenty database downloads. Every step after this one is
+      # gated on its verdict, which is how the job ends without merging and
+      # without failing.
+      - name: Decide whether to merge without a readiness answer
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          READINESS_RESULT: ${{ needs.readiness.result }}
+          READINESS_ANSWER: ${{ needs.readiness.outputs.should_merge }}
+        run: |
+          if [ "$READINESS_ANSWER" = "true" ]; then
+            echo "readiness decided: merge"
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # An answer of "wait" is still an answer, even on a job that went on to
+          # fail. Only an EMPTY output means nobody decided, and reading a
+          # deliberate wait as nobody-decided would let the age floor overturn
+          # the very verdict this workflow exists to respect.
+          if [ "$READINESS_ANSWER" = "false" ]; then
+            echo "readiness decided: wait"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # No answer, so the readiness job itself is gone. Fall back to the one
+          # thing that needs neither source metadata nor a live readiness job:
+          # time since the last release.
+          last=$(gh release view --repo "$GITHUB_REPOSITORY" --json publishedAt \
+                   -q .publishedAt 2>/dev/null || true)
+          if [ -z "$last" ]; then
+            proceed=true
+            because="no previous release was found"
+          else
+            age=$(( ( $(date -u +%s) - $(date -u -d "$last" +%s) ) / 3600 ))
+            if [ "$age" -ge "$MERGE_FALLBACK_AGE_H" ]; then
+              proceed=true
+              because="the last release is ${age}h old, at or over the ${MERGE_FALLBACK_AGE_H}h floor"
+            else
+              proceed=false
+              because="the last release is only ${age}h old, under the ${MERGE_FALLBACK_AGE_H}h floor"
+            fi
+          fi
+
+          if [ "$proceed" = true ]; then
+            note="Readiness could not be determined: the readiness job ended as '${READINESS_RESULT}' without producing an answer. This run merged on age, because ${because}."
+          else
+            note="Readiness could not be determined: the readiness job ended as '${READINESS_RESULT}' without producing an answer. This run did not merge, because ${because}, so no day of data is missing yet. The next hourly tick retries."
+          fi
+          echo "::warning::$note"
+          echo "proceed=$proceed" >> "$GITHUB_OUTPUT"
+
+          # Carried in the environment rather than a marker file, unlike the
+          # gate markers below: the checkout in the next step cleans the
+          # workspace and would delete anything written here.
+          echo "READINESS_NOTE=$note" >> "$GITHUB_ENV"
+
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            echo "$note" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Checkout
+        if: steps.gate.outputs.proceed == 'true'
         uses: actions/checkout@v7
 
       - uses: r-lib/actions/setup-r@v2
+        if: steps.gate.outputs.proceed == 'true'
         with:
           r-version: "release"
           use-public-rspm: true
 
       - uses: r-lib/actions/setup-r-dependencies@v2
+        if: steps.gate.outputs.proceed == 'true'
         with:
           packages: |
             any::RSQLite
@@ -113,6 +214,7 @@ jobs:
             any::DBI
 
       - name: Download pipeline databases
+        if: steps.gate.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -309,19 +411,23 @@ jobs:
           done
 
       - name: Run unit tests
+        if: steps.gate.outputs.proceed == 'true'
         run: Rscript scripts/tests/testthat.R
 
       - name: Run merge
+        if: steps.gate.outputs.proceed == 'true'
         run: |
           Rscript scripts/merge.R sources observatory.db
 
       - name: Collect pipeline freshness metadata
+        if: steps.gate.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           Rscript scripts/collect-metadata.R observatory.db
 
       - name: Check source freshness
+        if: steps.gate.outputs.proceed == 'true'
         env:
           GATE_OVERRIDE: ${{ inputs.ignore_freshness_gate }}
         run: |
@@ -332,6 +438,7 @@ jobs:
           Rscript scripts/check-freshness.R observatory.db sources
 
       - name: Compress database for release
+        if: steps.gate.outputs.proceed == 'true'
         run: |
           # The uncompressed observatory.db has grown close to GitHub's 2 GiB
           # release-asset cap, so we publish a zstd-compressed asset instead.
@@ -342,6 +449,7 @@ jobs:
           echo "observatory.db $(stat -c%s observatory.db) bytes -> observatory.db.zst $(stat -c%s observatory.db.zst) bytes"
 
       - name: Guard release-asset size
+        if: steps.gate.outputs.proceed == 'true'
         run: |
           # GitHub release assets are hard-capped at 2 GiB. Abort before we
           # touch any tag if the published asset is oversized, so a runaway
@@ -357,6 +465,7 @@ jobs:
           fi
 
       - name: Create release
+        if: steps.gate.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -377,6 +486,7 @@ jobs:
           echo "$TAG" > release-published
 
       - name: Trigger viewer deploy
+        if: steps.gate.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ secrets.VIEWER_DEPLOY_TOKEN }}
         run: |
@@ -392,7 +502,7 @@ jobs:
             -f event_type=data-updated
 
       - name: Fail the run if any source failed the gate
-        if: '!cancelled()'
+        if: "!cancelled() && steps.gate.outputs.proceed == 'true'"
         run: |
           # The non-fatal half of the gate. By the time this runs the release
           # either shipped or was refused earlier; either way this step only
@@ -405,11 +515,27 @@ jobs:
           fi
           echo "No source failed the freshness gate."
 
+      - name: Fail the run when readiness could not be determined
+        if: '!cancelled()'
+        run: |
+          # The incident this guards against was invisible precisely because
+          # every job in the run finished green or skipped, so nobody looked for
+          # two days. Losing readiness is not a state anyone chose, whether the
+          # age fallback then let the merge through or held it back, so the run
+          # goes red here and the notification below explains which of the two
+          # happened. This is the last step that can fail before that report.
+          if [ -n "${READINESS_NOTE:-}" ]; then
+            echo "::error::$READINESS_NOTE"
+            exit 1
+          fi
+          echo "Readiness produced an answer; nothing to report."
+
       - name: Report failure as an issue
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GATE_PROCEED: ${{ steps.gate.outputs.proceed }}
         run: |
           # One issue, not one per day: the title carries no date, so a week of
           # failures becomes a week of comments on a single thread.
@@ -430,10 +556,14 @@ jobs:
             # the Actions tab to tell them apart.
             if [ -f merge-gate-refused ]; then
               echo "NO RELEASE WAS PUBLISHED today: a source the site cannot function without failed the gate."
+            elif [ "${GATE_PROCEED:-}" = "false" ]; then
+              echo "NO RELEASE WAS PUBLISHED by this run, and that was the intended outcome: readiness could not be determined and the last release is still newer than the ${MERGE_FALLBACK_AGE_H}h fallback floor, so no day of data has been lost. The next tick retries. Read this as a readiness outage to investigate, not a data outage."
             elif [ ! -f release-published ]; then
               echo "NO RELEASE WAS PUBLISHED today: the run failed before the release was created (see the run for which step)."
             elif [ -f merge-gate-failed ]; then
               echo "Today's release WAS published, but at least one source is degraded."
+            elif [ -n "${READINESS_NOTE:-}" ]; then
+              echo "Today's release WAS published, on age, because readiness could not be determined. The data is fine; the readiness job is what needs investigating."
             else
               echo "Today's release WAS published; the merge job failed after publishing (see the run for which step)."
             fi
@@ -441,6 +571,10 @@ jobs:
             echo "Run: $RUN_URL"
             echo "Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo
+            if [ -n "${READINESS_NOTE:-}" ]; then
+              echo "$READINESS_NOTE"
+              echo
+            fi
             if [ -f merge-gate-failed ]; then
               echo "Sources that failed the freshness gate:"
               echo
