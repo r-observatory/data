@@ -192,6 +192,15 @@ jobs:
           dl_dated bioc-code-metrics code bioc-code-metrics.db
           dl_dated bioc-code-metrics data bioc-data-metrics.db
 
+          # Sources that publish a zstd-compressed asset next to (or instead of)
+          # the plain database. Their release is hourly and the plain file is
+          # about nine times the compressed one, so preferring the compressed
+          # asset is what lets them stop publishing the plain copy at all
+          # instead of growing the archive by a full database every hour.
+          # A source listed here still works if it only has the plain file.
+          declare -A compressed_source
+          compressed_source[cran-queue]=1
+
           declare -A repo_db_map
           repo_db_map[cran-queue]=queue.db
           repo_db_map[cran-feed]=feed.db
@@ -217,6 +226,18 @@ jobs:
             # Create a temp directory for this download
             tmpdir=$(mktemp -d)
 
+            # A compressed-capable source is asked for "<db>*" so one download
+            # brings back whichever of the plain and compressed assets the
+            # release actually carries, and the handling below prefers the
+            # compressed one. Matching on the target's own name keeps this from
+            # sweeping in the sharded assets that sit alongside some summaries.
+            dl_pattern="$target"
+            dated_pattern="*.db"
+            if [ -n "${compressed_source[$repo]:-}" ]; then
+              dl_pattern="$target*"
+              dated_pattern="$target*"
+            fi
+
             # cran-downloads and r2u-downloads use a rolling "current" tag with
             # sharded assets; we only want their small summary DB ($target).
             case "$repo" in
@@ -224,7 +245,7 @@ jobs:
                 dl_tag=current
                 download_cmd=(gh release download current
                               --repo "r-observatory/$repo"
-                              --pattern "$target"
+                              --pattern "$dl_pattern"
                               --dir "$tmpdir")
                 ;;
               *)
@@ -238,12 +259,12 @@ jobs:
                 if [ -n "$dl_tag" ]; then
                   download_cmd=(gh release download "$dl_tag"
                                 --repo "r-observatory/$repo"
-                                --pattern "*.db"
+                                --pattern "${dated_pattern}"
                                 --dir "$tmpdir")
                 else
                   download_cmd=(gh release download
                                 --repo "r-observatory/$repo"
-                                --pattern "*.db"
+                                --pattern "${dated_pattern}"
                                 --dir "$tmpdir")
                 fi
                 ;;
@@ -267,9 +288,26 @@ jobs:
             done
 
             if [ -n "$dl_ok" ]; then
-              # Find the downloaded .db file and rename to expected name
+              # Prefer a compressed asset when the release carries one. The
+              # size check has to run on the file we actually PULLED, before it
+              # is expanded: the size GitHub declares is the compressed asset's,
+              # so verifying after decompression would compare a database
+              # against a compressed byte count and fail every time.
+              compressed=$(find "$tmpdir" -name "*.db.zst" -type f | head -1)
               downloaded=$(find "$tmpdir" -name "*.db" -type f | head -1)
-              if [ -n "$downloaded" ]; then
+              if [ -n "$compressed" ]; then
+                verify_size "r-observatory/$repo" "$dl_tag" "$(basename "$compressed")" "$compressed"
+                if ! command -v zstd >/dev/null; then
+                  echo "::error::zstd not found on the runner, needed to expand $(basename "$compressed")"
+                  exit 1
+                fi
+                if zstd -dq -f "$compressed" -o "sources/$target"; then
+                  echo "  -> sources/$target ($(stat --format=%s "sources/$target") bytes, from $(basename "$compressed"))"
+                else
+                  echo "  Warning: could not decompress $(basename "$compressed") from $repo"
+                  rm -f "sources/$target"
+                fi
+              elif [ -n "$downloaded" ]; then
                 mv "$downloaded" "sources/$target"
                 echo "  -> sources/$target ($(stat --format=%s "sources/$target") bytes)"
                 # Verify against the ACTUAL downloaded asset name (not $target,
