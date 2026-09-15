@@ -77,93 +77,11 @@ for (db_file in source_dbs) {
   cat("  File size:", format(file_size, big.mark = ","), "bytes\n")
 
   tryCatch({
-    # Attach source database
-    dbExecute(con, "ATTACH DATABASE ? AS src", params = list(src_path))
-
-    # Get list of tables from source
-    tables <- dbGetQuery(con,
-      "SELECT name, sql FROM src.sqlite_master
-       WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-    )
-
-    # Apply per-source allowlist (NULL means "all tables").
-    allow <- tables_to_merge_from(db_file, source_tables)
-    if (!is.null(allow)) {
-      tables <- tables[tables$name %in% allow, , drop = FALSE]
-      cat("  Allowlist: copying only [", paste(allow, collapse = ", "), "]\n")
-    }
-
-    table_stats <- list()
-
-    if (nrow(tables) > 0) {
-      dbExecute(con, "BEGIN TRANSACTION")
-
-      for (i in seq_len(nrow(tables))) {
-        tbl_name <- tables$name[i]
-        tbl_sql  <- tables$sql[i]
-
-        cat("  Table:", tbl_name)
-
-        # Create table if not exists — modify the CREATE TABLE statement
-        create_sql <- sub(
-          "^CREATE TABLE ",
-          "CREATE TABLE IF NOT EXISTS ",
-          tbl_sql,
-          ignore.case = TRUE
-        )
-        dbExecute(con, create_sql)
-
-        # Get column list from source table for INSERT
-        col_info <- dbGetQuery(con, sprintf('PRAGMA src.table_info("%s")', tbl_name))
-        cols <- col_info$name
-        cols_str <- paste(sprintf('"%s"', cols), collapse = ", ")
-
-        # Copy data
-        insert_sql <- sprintf(
-          'INSERT OR REPLACE INTO "%s" (%s) SELECT %s FROM src."%s"',
-          tbl_name, cols_str, cols_str, tbl_name
-        )
-        n_rows <- dbExecute(con, insert_sql)
-        cat(" ->", n_rows, "rows\n")
-
-        table_stats[[tbl_name]] <- n_rows
-      }
-
-      dbExecute(con, "COMMIT")
-    }
-
-    # Copy indexes
-    indexes <- dbGetQuery(con,
-      "SELECT sql FROM src.sqlite_master
-       WHERE type = 'index' AND sql IS NOT NULL"
-    )
-    if (nrow(indexes) > 0) {
-      for (j in seq_len(nrow(indexes))) {
-        idx_sql <- sub(
-          "^CREATE INDEX ",
-          "CREATE INDEX IF NOT EXISTS ",
-          indexes$sql[j],
-          ignore.case = TRUE
-        )
-        # Also handle UNIQUE indexes
-        idx_sql <- sub(
-          "^CREATE UNIQUE INDEX ",
-          "CREATE UNIQUE INDEX IF NOT EXISTS ",
-          idx_sql,
-          ignore.case = TRUE
-        )
-        tryCatch(
-          dbExecute(con, idx_sql),
-          error = function(e) {
-            cat("  Warning: index creation skipped:", conditionMessage(e), "\n")
-          }
-        )
-      }
-      cat("  Copied", nrow(indexes), "indexes\n")
-    }
-
-    # Detach source database
-    dbExecute(con, "DETACH DATABASE src")
+    # Attach, copy the allowlisted tables (NULL means "all tables") and the
+    # source's indexes, detach. Lives in merge_helpers.R so the tests drive
+    # the same copy the merge runs.
+    table_stats <- merge_source_db(con, src_path,
+                                   tables_to_merge_from(db_file, source_tables))
 
     merge_stats[[db_file]] <- list(
       status = "merged",

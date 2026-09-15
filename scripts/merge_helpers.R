@@ -96,11 +96,122 @@ source_tables <- list(
   # asserting it; vcs_ai_silent_channels says which channels found nothing
   # anywhere and whether anyone has explained it, so a quiet channel can render
   # as "not measured" rather than as a confident zero.
+  # repo_package_links is the only way to reach a package's repository once the
+  # package has left CRAN or Bioconductor. vcs_signals_summary is rebuilt from
+  # today's listings, so a delisted package loses its row the same day while its
+  # AI and dev-tooling rows stay behind, keyed only by repo_id. The link table
+  # is append-only (last_seen stops moving instead of the row going) and keys on
+  # (repo_id, package, origin). repo_packages stays out: it is today's mapping
+  # only, which vcs_signals_summary already carries.
   "vcs-signals-summary.db"       = c("vcs_signals_summary", "vcs_ai_signals", "vcs_dev_tooling",
                                      "vcs_ai_models", "vcs_ai_rule_inventory",
-                                     "vcs_ai_silent_channels"),
+                                     "vcs_ai_silent_channels", "repo_package_links"),
   "cran-task-views.db"           = c("cran_task_views", "cran_task_view_events", "cran_task_view_membership")
 )
+
+#' Copy one source DB into the output connection: every allowlisted table the
+#' source actually has, created from its own CREATE TABLE so keys and
+#' WITHOUT ROWID survive, then every index the source declares.
+#'
+#' A listed table the source does not have is not an error. The allowlist
+#' filters the source's own table list, so a table the producer has not
+#' published yet simply copies nothing, and adding it here can land before the
+#' producer does. An index on a table that was not copied fails to create and is
+#' skipped with a note.
+#'
+#' Errors propagate with src still attached and the transaction possibly open;
+#' cleaning up is left to the caller.
+#'
+#' @param con     output connection.
+#' @param src_path path to the source SQLite file.
+#' @param allow   NULL for every table, or the allowlisted table names.
+#' @return named list of rows copied per table, in source order.
+merge_source_db <- function(con, src_path, allow) {
+  DBI::dbExecute(con, "ATTACH DATABASE ? AS src", params = list(src_path))
+
+  tables <- DBI::dbGetQuery(con,
+    "SELECT name, sql FROM src.sqlite_master
+     WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+  )
+
+  if (!is.null(allow)) {
+    tables <- tables[tables$name %in% allow, , drop = FALSE]
+    cat("  Allowlist: copying only [", paste(allow, collapse = ", "), "]\n")
+  }
+
+  table_stats <- list()
+
+  if (nrow(tables) > 0) {
+    DBI::dbExecute(con, "BEGIN TRANSACTION")
+
+    for (i in seq_len(nrow(tables))) {
+      tbl_name <- tables$name[i]
+      tbl_sql  <- tables$sql[i]
+
+      cat("  Table:", tbl_name)
+
+      # Create table if not exists, from the source's own CREATE TABLE
+      create_sql <- sub(
+        "^CREATE TABLE ",
+        "CREATE TABLE IF NOT EXISTS ",
+        tbl_sql,
+        ignore.case = TRUE
+      )
+      DBI::dbExecute(con, create_sql)
+
+      # Get column list from source table for INSERT
+      col_info <- DBI::dbGetQuery(con, sprintf('PRAGMA src.table_info("%s")', tbl_name))
+      cols <- col_info$name
+      cols_str <- paste(sprintf('"%s"', cols), collapse = ", ")
+
+      # Copy data
+      insert_sql <- sprintf(
+        'INSERT OR REPLACE INTO "%s" (%s) SELECT %s FROM src."%s"',
+        tbl_name, cols_str, cols_str, tbl_name
+      )
+      n_rows <- DBI::dbExecute(con, insert_sql)
+      cat(" ->", n_rows, "rows\n")
+
+      table_stats[[tbl_name]] <- n_rows
+    }
+
+    DBI::dbExecute(con, "COMMIT")
+  }
+
+  # Copy indexes
+  indexes <- DBI::dbGetQuery(con,
+    "SELECT sql FROM src.sqlite_master
+     WHERE type = 'index' AND sql IS NOT NULL"
+  )
+  if (nrow(indexes) > 0) {
+    for (j in seq_len(nrow(indexes))) {
+      idx_sql <- sub(
+        "^CREATE INDEX ",
+        "CREATE INDEX IF NOT EXISTS ",
+        indexes$sql[j],
+        ignore.case = TRUE
+      )
+      # Also handle UNIQUE indexes
+      idx_sql <- sub(
+        "^CREATE UNIQUE INDEX ",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ",
+        idx_sql,
+        ignore.case = TRUE
+      )
+      tryCatch(
+        DBI::dbExecute(con, idx_sql),
+        error = function(e) {
+          cat("  Warning: index creation skipped:", conditionMessage(e), "\n")
+        }
+      )
+    }
+    cat("  Copied", nrow(indexes), "indexes\n")
+  }
+
+  DBI::dbExecute(con, "DETACH DATABASE src")
+
+  table_stats
+}
 
 #' Post-merge safety check. When a source DB was present, verify its expected
 #' tables landed in the output; returns the missing names (character(0) if none).
