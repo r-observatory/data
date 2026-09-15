@@ -753,10 +753,17 @@ test_that("the fatal sources are downloaded with a retry rather than one attempt
   # A single 5xx on feed.db or metadata.db would otherwise read as "missing",
   # which is fatal, and cost the site a day of data.
   yml <- merge_yml()
-  # Two 3-attempt loops: verify_size already had one, the download now has one.
-  expect_true(sum(grepl("for attempt in 1 2 3", yml, fixed = TRUE)) >= 2L)
-  expect_true(any(grepl("dl_backoffs", yml, fixed = TRUE)))
-  expect_true(any(grepl("dl_ok=yes", yml, fixed = TRUE)))
+  # Read the loop out of the rolling-source download itself, from where it
+  # resets dl_ok to where it sets it. Counting 3-attempt loops across the whole
+  # file stopped meaning anything once the dated metrics download grew one of
+  # its own: that loop alone kept the count up with this one gone.
+  start <- grep('^\\s*dl_ok=""\\s*$', yml)
+  expect_equal(length(start), 1L)
+  end <- start - 1L + grep("dl_ok=yes", yml[start:length(yml)], fixed = TRUE)[1]
+  expect_false(is.na(end))
+  window <- yml[start:end]
+  expect_true(any(grepl("for attempt in 1 2 3", window, fixed = TRUE)))
+  expect_true(any(grepl("dl_backoffs", window, fixed = TRUE)))
 })
 
 test_that("the merge workflow keeps a documented override input", {

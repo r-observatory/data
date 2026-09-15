@@ -264,26 +264,114 @@ jobs:
             echo "  size OK: $asset = $actual bytes (matches release asset)"
           }
 
+          # Drafts are excluded because gh lists them unless told not to, and a
+          # draft is a release nobody finished. On 2026-09-13 GitHub returned
+          # 500s while cran-code-metrics was creating metrics-2026-09-13, which
+          # left a draft holding its two manifests and no database, under a tag
+          # that sorts above every published one. This workflow still resolved
+          # metrics-2026-09-12 only because its token cannot see another
+          # repository's drafts. A token that could would pick the draft, find
+          # nothing to download, and publish observatory.db without those tables.
+          #
+          # The limit is explicit because gh stops at 30 by default and orders
+          # by the tagged commit's date, which many metrics releases share, so
+          # the newest tag is not guaranteed to be among the first 30 returned.
           latest_tag() {  # $1=repo  $2=series-prefix (metrics|code|data)
-            gh release list --repo "r-observatory/$1" --json tagName -q '.[].tagName' \
+            gh release list --repo "r-observatory/$1" --exclude-drafts --limit 1000 \
+                --json tagName -q '.[].tagName' \
               | { grep "^$2-" || true; } | sort -r | head -1
           }
           dl_dated() {    # $1=repo  $2=series  $3=target-filename
             # Metrics repos now publish ONE dated metrics-* release carrying both the
             # code and data DBs; prefer it and fall back to the legacy per-series
             # $2-* tag while the metrics- scheme rolls out.
+            local tag tmpdir attempt got="" state waited=0
             tag=$(latest_tag "$1" metrics)
             [ -n "$tag" ] || tag=$(latest_tag "$1" "$2")
             if [ -z "$tag" ]; then
               echo "  Warning: no metrics-*/$2-* release in r-observatory/$1"; return 0
             fi
+
+            # Three attempts like the rolling sources below, but between them
+            # this waits on the release rather than on the clock.
+            # cran-code-metrics re-publishes into the same day's release with
+            # `gh release upload --clobber`, which deletes each asset before it
+            # uploads the replacement. On 2026-09-12 that happened at 18:21, and
+            # the merge runs from 18:00 UTC until midnight. Across the 25
+            # re-uploads from 2026-08-19 to then, cran-code-metrics.db took 34
+            # to 89 seconds to come back, and the database is still growing, so
+            # any fixed schedule of waits is a guess the next slow upload can
+            # outlast. After a failed attempt the release is instead asked every
+            # 15 seconds whether it lists the database as uploaded, and the next
+            # attempt goes as soon as it does.
+            #
+            # The asking stops after 180 seconds per database, about twice the
+            # longest re-upload seen. A release that has lost the database for
+            # good, because a --clobber deleted it and the replacement never
+            # arrived, looks the same as one partway through an upload. All four
+            # databases waiting out that limit adds about 13 minutes, which the
+            # job's 30 can absorb next to a merge that takes 7 to 12. Past it the
+            # merge goes ahead without that database, as it always has when a
+            # download failed, and the gate reports it missing on every merge
+            # until the producer publishes it again.
+            #
+            # An empty file is retried too. If the last attempt still brings one
+            # back, it goes to verify_size like any other download, which aborts
+            # the merge when the release declares a non-empty asset, exactly as
+            # it did before these retries. That abort publishes nothing, so the
+            # day's metrics still read as unmerged and the next hourly tick
+            # tries again. Publishing without the tables instead would keep them
+            # off the site until a once-daily source publishes after that
+            # release, because until then readiness sees nothing new to merge.
             tmpdir=$(mktemp -d)
-            if gh release download "$tag" --repo "r-observatory/$1" --pattern "$3" --dir "$tmpdir" 2>/dev/null; then
+            for attempt in 1 2 3; do
+              # gh's own error stays in the log above each warning, since a
+              # clobber gap ("no assets match the file pattern"), a 5xx and a
+              # cut stream are worth telling apart.
+              if gh release download "$tag" --repo "r-observatory/$1" --pattern "$3" --dir "$tmpdir"; then
+                if [ -s "$tmpdir/$3" ] || [ "$attempt" -eq 3 ]; then
+                  got=yes; break
+                fi
+                echo "  Warning: $3 from $1@$tag came back as an empty file (attempt $attempt/3)"
+              else
+                echo "  Warning: could not download $3 from $1@$tag (attempt $attempt/3)"
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                break
+              fi
+              # gh refuses to download over a file it already wrote, so a partial
+              # or empty one would make every later attempt fail.
+              find "$tmpdir" -mindepth 1 -delete 2>/dev/null || true
+              while :; do
+                sleep 15
+                waited=$((waited + 15))
+                if ! state=$(gh release view "$tag" --repo "r-observatory/$1" --json assets \
+                               --jq ".assets[] | select(.name == \"$3\") | .state"); then
+                  state="unreadable"
+                fi
+                if [ "$state" = uploaded ] || [ "$waited" -ge 180 ]; then
+                  break
+                fi
+                echo "  $3 on $1@$tag is ${state:-not listed}; waiting for its upload (${waited}s so far)..."
+              done
+              echo "  retrying $3 from $1@$tag..."
+            done
+
+            if [ -n "$got" ]; then
               mv "$tmpdir/$3" "sources/$3"
               echo "  -> sources/$3 from $tag ($(stat --format=%s "sources/$3") bytes)"
               verify_size "r-observatory/$1" "$tag" "$3" "sources/$3"
+              # An empty file still here got past verify_size because the
+              # release declares zero bytes or its size could not be read. It
+              # passes PRAGMA integrity_check and counts as present to the
+              # freshness gate, so it would publish without these tables and
+              # without reddening the run. Left out, the gate reports it missing.
+              if [ ! -s "sources/$3" ]; then
+                echo "  Warning: $3 from $1@$tag is empty; leaving it out of sources/"
+                rm -f "sources/$3"
+              fi
             else
-              echo "  Warning: could not download $3 from $1@$tag"
+              echo "  Warning: could not download $3 from $1@$tag after 3 attempts"
             fi
             rm -rf "$tmpdir"
           }
@@ -436,9 +524,9 @@ jobs:
           for db in sources/*.db; do
             if [ -f "$db" ]; then
               if sqlite3 "$db" "PRAGMA integrity_check" 2>/dev/null | grep -q "^ok$"; then
-                echo "  $(basename $db): OK"
+                echo "  $(basename "$db"): OK"
               else
-                echo "  $(basename $db): FAILED integrity check, removing"
+                echo "  $(basename "$db"): FAILED integrity check, removing"
                 # Record the removal so the freshness gate can tell a corrupt
                 # source from one that simply never published. Without this the
                 # two are identical by the time merge.R runs.
