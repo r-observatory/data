@@ -72,6 +72,8 @@ payload_bytes <- nchar(payload, type = "bytes")
 # each line of `calls` in one shell, the way the workflow step runs all four.
 #
 # `releases` is gh's own order (newest commit date first), with drafts marked.
+# `listings` says what each successive `gh release list` does, and runs out into
+# "ok": "ok" lists the releases, anything else fails with a 502.
 # `plan` says what each successive download does, and runs out into "ok":
 #   ok       writes the asset
 #   empty    writes a zero-byte file and exits 0
@@ -91,7 +93,7 @@ payload_bytes <- nchar(payload, type = "bytes")
 # `sleep` is stubbed and moves that clock forward rather than waiting. `stat`
 # is stubbed too, because `stat --format` is GNU-only and a macOS checkout would
 # otherwise fail the size check for reasons unrelated to what is being tested.
-run_dl_dated <- function(releases, plan = character(),
+run_dl_dated <- function(releases, plan = character(), listings = character(),
                          calls = "dl_dated cran-code-metrics code cran-code-metrics.db",
                          declared = payload_bytes, gap = NULL, gap_state = "") {
   root <- withr::local_tempdir(.local_envir = parent.frame())
@@ -105,12 +107,13 @@ run_dl_dated <- function(releases, plan = character(),
   writeLines(sprintf("%s\t%s", releases$tag, releases$kind),
              file.path(state, "releases"))
   writeLines(plan, file.path(state, "plan"))
+  writeLines(listings, file.path(state, "listings"))
   writeLines(if (is.null(declared)) character() else format(declared),
              file.path(state, "declared"))
   writeLines(if (is.null(gap)) character() else format(gap, scientific = FALSE),
              file.path(state, "gap"))
   writeLines(gap_state, file.path(state, "gap_state"))
-  file.create(file.path(state, c("sleeps", "downloads")))
+  file.create(file.path(state, c("sleeps", "downloads", "lists")))
 
   writeLines(c(
     "#!/usr/bin/env bash",
@@ -135,6 +138,12 @@ run_dl_dated <- function(releases, plan = character(),
     '         END { if (NR == 2 && now >= f && now < t) print 1 }\' "$state/gap")',
     'case "$sub" in',
     '  "release list")',
+    '    echo list >> "$state/lists"',
+    '    n=$(wc -l < "$state/lists")',
+    '    step=$(sed -n "$((n))p" "$state/listings")',
+    '    if [ -n "$step" ] && [ "$step" != ok ]; then',
+    '      echo "HTTP 502: Bad Gateway (https://api.github.com/graphql)" >&2; exit 1',
+    '    fi',
     '    while IFS="$(printf \'\\t\')" read -r name kind; do',
     '      if [ -n "$exclude" ] && [ "$kind" = draft ]; then continue; fi',
     '      printf "%s\\n" "$name"',
@@ -207,6 +216,7 @@ run_dl_dated <- function(releases, plan = character(),
     log = paste(out, collapse = "\n"),
     finished = any(out == "dl_dated returned"),
     downloads = read_state("downloads"),
+    lists = read_state("lists"),
     sleeps = as.numeric(read_state("sleeps")),
     sources = stats::setNames(file.size(landed), basename(landed)),
     target_bytes = {
@@ -257,6 +267,38 @@ test_that("a repo with no dated release is skipped without failing the step", {
   expect_match(res$log, "no metrics-*/code-* release", fixed = TRUE)
 })
 
+test_that("a release listing that fails is retried rather than read as no release", {
+  skip_if(!nzchar(Sys.which("bash")), "bash is not available")
+  # `gh release list` can make more than one request, and any of them can come
+  # back as a 5xx the way GitHub's API did on 2026-09-13. Piped through grep,
+  # sort and head, a failed listing looked exactly like a repo with no dated
+  # release: nothing was retried, no download was attempted, and the log
+  # blamed a release that was there all along.
+  res <- run_dl_dated(published("metrics-2026-09-12"), listings = c("fail", "ok"))
+  expect_true(res$finished, info = res$log)
+  expect_equal(res$downloads, "metrics-2026-09-12")
+  expect_equal(res$target_bytes, payload_bytes)
+  expect_match(res$log, "HTTP 502", fixed = TRUE)
+  expect_no_match(res$log, "no metrics-*/code-* release", fixed = TRUE)
+})
+
+test_that("releases that cannot be listed at all are reported as that", {
+  skip_if(!nzchar(Sys.which("bash")), "bash is not available")
+  # Non-fatal, like a download that fails every attempt, and bounded by the
+  # same per-database wait, so the gate reports the database missing and the
+  # log says why.
+  res <- run_dl_dated(published("metrics-2026-09-12"), listings = rep("fail", 10))
+  expect_true(res$finished, info = res$log)
+  expect_equal(length(res$lists), 3L)
+  expect_equal(length(res$downloads), 0L)
+  expect_true(is.na(res$target_bytes))
+  expect_match(res$log,
+               "could not list the releases of r-observatory/cran-code-metrics after 3 attempts",
+               fixed = TRUE)
+  expect_no_match(res$log, "no metrics-*/code-* release", fixed = TRUE)
+  expect_lte(sum(res$sleeps), 240)
+})
+
 test_that("a failed, partial or empty download is retried until a real file arrives", {
   skip_if(!nzchar(Sys.which("bash")), "bash is not available")
   # A cut stream leaves part of the file behind, and gh refuses to download
@@ -300,13 +342,18 @@ test_that("a database that never comes back is given up on inside a bounded wait
   # and the replacement upload fails. The merge then goes ahead without it
   # and the gate reports it missing. The whole merge job has 30 minutes, and
   # a merge takes up to 12 of them, so the wait for each of the four dated
-  # databases has to stay short enough for all four to fit around it.
-  res <- run_dl_dated(published("metrics-2026-09-12"), gap = c(0, 1e9))
-  expect_true(res$finished, info = res$log)
-  expect_equal(length(res$downloads), 3L)
-  expect_true(is.na(res$target_bytes))
-  expect_match(res$log, "after 3 attempts", fixed = TRUE)
-  expect_lte(sum(res$sleeps), 240)
+  # databases has to stay short enough for all four to fit around it. A
+  # listing that needed retries first comes out of the same allowance rather
+  # than adding to it.
+  for (listings in list(character(), c("fail", "fail"))) {
+    res <- run_dl_dated(published("metrics-2026-09-12"), gap = c(0, 1e9),
+                        listings = listings)
+    expect_true(res$finished, info = res$log)
+    expect_equal(length(res$downloads), 3L)
+    expect_true(is.na(res$target_bytes))
+    expect_match(res$log, "after 3 attempts", fixed = TRUE)
+    expect_lte(sum(res$sleeps), 210)
+  }
 })
 
 test_that("an empty download of a non-empty asset still aborts the merge", {

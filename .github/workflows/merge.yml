@@ -276,18 +276,46 @@ jobs:
           # The limit is explicit because gh stops at 30 by default and orders
           # by the tagged commit's date, which many metrics releases share, so
           # the newest tag is not guaranteed to be among the first 30 returned.
-          latest_tag() {  # $1=repo  $2=series-prefix (metrics|code|data)
-            gh release list --repo "r-observatory/$1" --exclude-drafts --limit 1000 \
-                --json tagName -q '.[].tagName' \
-              | { grep "^$2-" || true; } | sort -r | head -1
+          #
+          # The listing is captured before it is filtered, and a failed one
+          # returns 1. Piped straight into grep, sort and head, a 5xx from gh
+          # came out as an empty tag with head's exit status, which is exactly
+          # what a repository with no dated release looks like.
+          latest_tag() {  # $1=repo  $2...=series prefixes, the first with a release wins
+            local tags prefix tag
+            tags=$(gh release list --repo "r-observatory/$1" --exclude-drafts --limit 1000 \
+                     --json tagName -q '.[].tagName') || return 1
+            shift
+            for prefix in "$@"; do
+              tag=$(printf '%s\n' "$tags" | { grep "^$prefix-" || true; } | sort -r | head -1)
+              if [ -n "$tag" ]; then
+                echo "$tag"; return 0
+              fi
+            done
           }
           dl_dated() {    # $1=repo  $2=series  $3=target-filename
             # Metrics repos now publish ONE dated metrics-* release carrying both the
             # code and data DBs; prefer it and fall back to the legacy per-series
             # $2-* tag while the metrics- scheme rolls out.
-            local tag tmpdir attempt got="" state waited=0
-            tag=$(latest_tag "$1" metrics)
-            [ -n "$tag" ] || tag=$(latest_tag "$1" "$2")
+            local tag="" listed="" tmpdir attempt got="" state waited=0
+            # A listing that fails is retried, and its waits count against the
+            # same per-database limit as the download's below. One that never
+            # succeeds says so, since "no release" would send whoever reads the
+            # log looking for a release that exists.
+            for attempt in 1 2 3; do
+              if tag=$(latest_tag "$1" metrics "$2"); then
+                listed=yes; break
+              fi
+              echo "  Warning: could not list the releases of r-observatory/$1 (attempt $attempt/3)"
+              if [ "$attempt" -lt 3 ]; then
+                sleep $((15 * attempt))
+                waited=$((waited + 15 * attempt))
+              fi
+            done
+            if [ -z "$listed" ]; then
+              echo "  Warning: could not list the releases of r-observatory/$1 after 3 attempts; going ahead without $3"
+              return 0
+            fi
             if [ -z "$tag" ]; then
               echo "  Warning: no metrics-*/$2-* release in r-observatory/$1"; return 0
             fi
