@@ -53,56 +53,12 @@ dbExecute(con, "PRAGMA journal_mode=WAL")
 dbExecute(con, "PRAGMA synchronous=NORMAL")
 
 # ---------------------------------------------------------------------------
-# Track merge statistics
-# ---------------------------------------------------------------------------
-merge_stats <- list()
-
-# ---------------------------------------------------------------------------
 # Merge each source database
 # ---------------------------------------------------------------------------
-for (db_file in source_dbs) {
-  src_path <- file.path(sources_dir, db_file)
-  cat("--- Processing:", db_file, "---\n")
-
-  if (!file.exists(src_path)) {
-    warning("Source DB not found, skipping: ", src_path)
-    merge_stats[[db_file]] <- list(
-      status = "skipped",
-      reason = "file not found"
-    )
-    next
-  }
-
-  file_size <- file.info(src_path)$size
-  cat("  File size:", format(file_size, big.mark = ","), "bytes\n")
-
-  tryCatch({
-    # Attach, copy the allowlisted tables (NULL means "all tables") and the
-    # source's indexes, detach. Lives in merge_helpers.R so the tests drive
-    # the same copy the merge runs.
-    table_stats <- merge_source_db(con, src_path,
-                                   tables_to_merge_from(db_file, source_tables))
-
-    merge_stats[[db_file]] <- list(
-      status = "merged",
-      file_size = file_size,
-      tables = table_stats
-    )
-
-  }, error = function(e) {
-    warning("Error processing ", db_file, ": ", conditionMessage(e))
-    merge_stats[[db_file]] <<- list(
-      status = "error",
-      reason = conditionMessage(e)
-    )
-    # Try to detach if still attached
-    tryCatch(dbExecute(con, "DETACH DATABASE src"), error = function(e2) NULL)
-    # Try to rollback if in transaction
-    tryCatch(dbExecute(con, "ROLLBACK"), error = function(e2) NULL)
-  })
-
-  cat("\n")
-}
+# One entry per source in source_dbs: merged, skipped (file not found) or
+# error. The loop lives in merge_helpers.R so the tests run it, allowlist
+# lookup included, against real SQLite files.
+merge_stats <- merge_sources(con, sources_dir)
 
 merged_count <- sum(vapply(merge_stats, function(s) {
   !is.null(s) && identical(s$status, "merged")

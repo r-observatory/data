@@ -119,8 +119,8 @@ source_tables <- list(
 #' producer does. An index on a table that was not copied fails to create and is
 #' skipped with a note.
 #'
-#' Errors propagate with src still attached and the transaction possibly open;
-#' cleaning up is left to the caller.
+#' When the copy fails, whatever it has not committed is rolled back and src is
+#' detached before the error propagates, so the next source can still attach.
 #'
 #' @param con     output connection.
 #' @param src_path path to the source SQLite file.
@@ -128,6 +128,20 @@ source_tables <- list(
 #' @return named list of rows copied per table, in source order.
 merge_source_db <- function(con, src_path, allow) {
   DBI::dbExecute(con, "ATTACH DATABASE ? AS src", params = list(src_path))
+
+  # SQLite refuses to detach a database while a transaction is open ("database
+  # src is locked"), so a failed copy has to roll back before it detaches.
+  # merge.R's error handler used to try them the other way round: the detach
+  # failed, src stayed attached, and every later source then failed to attach
+  # with "database src is already in use". One bad source cost every source
+  # after it, cran-task-views always among them since it is last, and merge.R
+  # refuses the release when the task-view tables are missing. ATTACH cannot
+  # run inside a transaction, so any transaction open here is this copy's own.
+  done <- FALSE
+  on.exit(if (!done) {
+    tryCatch(DBI::dbExecute(con, "ROLLBACK"), error = function(e) NULL)
+    tryCatch(DBI::dbExecute(con, "DETACH DATABASE src"), error = function(e) NULL)
+  }, add = TRUE)
 
   tables <- DBI::dbGetQuery(con,
     "SELECT name, sql FROM src.sqlite_master
@@ -209,8 +223,59 @@ merge_source_db <- function(con, src_path, allow) {
   }
 
   DBI::dbExecute(con, "DETACH DATABASE src")
+  done <- TRUE
 
   table_stats
+}
+
+#' Merge every source DB in order into the output connection. A source that is
+#' missing is skipped and one that fails is reported, and either way the loop
+#' goes on to the next source.
+#'
+#' @param con         output connection.
+#' @param sources_dir directory the source DBs were downloaded into.
+#' @param dbs         source DB file names, in merge order.
+#' @param tables      per-source allowlists, shaped like source_tables.
+#' @return named list keyed by source file: status "merged" (with file_size and
+#'   rows per table), "skipped" or "error" (with a reason).
+merge_sources <- function(con, sources_dir, dbs = source_dbs, tables = source_tables) {
+  merge_stats <- list()
+
+  for (db_file in dbs) {
+    src_path <- file.path(sources_dir, db_file)
+    cat("--- Processing:", db_file, "---\n")
+
+    if (!file.exists(src_path)) {
+      warning("Source DB not found, skipping: ", src_path, call. = FALSE)
+      merge_stats[[db_file]] <- list(
+        status = "skipped",
+        reason = "file not found"
+      )
+      next
+    }
+
+    file_size <- file.info(src_path)$size
+    cat("  File size:", format(file_size, big.mark = ","), "bytes\n")
+
+    merge_stats[[db_file]] <- tryCatch({
+      list(
+        status = "merged",
+        file_size = file_size,
+        tables = merge_source_db(con, src_path, tables_to_merge_from(db_file, tables))
+      )
+    }, error = function(e) {
+      # merge_source_db has already rolled back and detached.
+      warning("Error processing ", db_file, ": ", conditionMessage(e), call. = FALSE)
+      list(
+        status = "error",
+        reason = conditionMessage(e)
+      )
+    })
+
+    cat("\n")
+  }
+
+  merge_stats
 }
 
 #' Post-merge safety check. When a source DB was present, verify its expected
