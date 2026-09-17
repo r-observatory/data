@@ -95,7 +95,8 @@ test_that("vcs-signals is registered in both merger lists", {
   expect_equal(
     tables_to_merge_from("vcs-signals-summary.db", source_tables),
     c("vcs_signals_summary", "vcs_ai_signals", "vcs_dev_tooling",
-      "vcs_ai_models", "vcs_ai_rule_inventory", "vcs_ai_silent_channels")
+      "vcs_ai_models", "vcs_ai_rule_inventory", "vcs_ai_silent_channels",
+      "repo_package_links")
   )
 })
 

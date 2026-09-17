@@ -96,11 +96,187 @@ source_tables <- list(
   # asserting it; vcs_ai_silent_channels says which channels found nothing
   # anywhere and whether anyone has explained it, so a quiet channel can render
   # as "not measured" rather than as a confident zero.
+  # repo_package_links is the only way to reach a package's repository once the
+  # package has left CRAN or Bioconductor. vcs_signals_summary is rebuilt from
+  # today's listings, so a delisted package loses its row the same day while its
+  # AI and dev-tooling rows stay behind, keyed only by repo_id. The link table
+  # is append-only (last_seen stops moving instead of the row going) and keys on
+  # (repo_id, package, origin). repo_packages stays out: it is today's mapping
+  # only, which vcs_signals_summary already carries.
   "vcs-signals-summary.db"       = c("vcs_signals_summary", "vcs_ai_signals", "vcs_dev_tooling",
                                      "vcs_ai_models", "vcs_ai_rule_inventory",
-                                     "vcs_ai_silent_channels"),
+                                     "vcs_ai_silent_channels", "repo_package_links"),
   "cran-task-views.db"           = c("cran_task_views", "cran_task_view_events", "cran_task_view_membership")
 )
+
+#' Copy one source DB into the output connection: every allowlisted table the
+#' source actually has, created from its own CREATE TABLE so keys and
+#' WITHOUT ROWID survive, then every index the source declares.
+#'
+#' A listed table the source does not have is not an error. The allowlist
+#' filters the source's own table list, so a table the producer has not
+#' published yet simply copies nothing, and adding it here can land before the
+#' producer does. An index on a table that was not copied fails to create and is
+#' skipped with a note.
+#'
+#' When the copy fails, whatever it has not committed is rolled back and src is
+#' detached before the error propagates, so the next source can still attach.
+#'
+#' @param con     output connection.
+#' @param src_path path to the source SQLite file.
+#' @param allow   NULL for every table, or the allowlisted table names.
+#' @return named list of rows copied per table, in source order.
+merge_source_db <- function(con, src_path, allow) {
+  DBI::dbExecute(con, "ATTACH DATABASE ? AS src", params = list(src_path))
+
+  # SQLite refuses to detach a database while a transaction is open ("database
+  # src is locked"), so a failed copy has to roll back before it detaches.
+  # merge.R's error handler used to try them the other way round: the detach
+  # failed, src stayed attached, and every later source then failed to attach
+  # with "database src is already in use". One bad source cost every source
+  # after it, cran-task-views always among them since it is last, and merge.R
+  # refuses the release when the task-view tables are missing. ATTACH cannot
+  # run inside a transaction, so any transaction open here is this copy's own.
+  done <- FALSE
+  on.exit(if (!done) {
+    tryCatch(DBI::dbExecute(con, "ROLLBACK"), error = function(e) NULL)
+    tryCatch(DBI::dbExecute(con, "DETACH DATABASE src"), error = function(e) NULL)
+  }, add = TRUE)
+
+  tables <- DBI::dbGetQuery(con,
+    "SELECT name, sql FROM src.sqlite_master
+     WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+  )
+
+  if (!is.null(allow)) {
+    tables <- tables[tables$name %in% allow, , drop = FALSE]
+    cat("  Allowlist: copying only [", paste(allow, collapse = ", "), "]\n")
+  }
+
+  table_stats <- list()
+
+  if (nrow(tables) > 0) {
+    DBI::dbExecute(con, "BEGIN TRANSACTION")
+
+    for (i in seq_len(nrow(tables))) {
+      tbl_name <- tables$name[i]
+      tbl_sql  <- tables$sql[i]
+
+      cat("  Table:", tbl_name)
+
+      # Create table if not exists, from the source's own CREATE TABLE
+      create_sql <- sub(
+        "^CREATE TABLE ",
+        "CREATE TABLE IF NOT EXISTS ",
+        tbl_sql,
+        ignore.case = TRUE
+      )
+      DBI::dbExecute(con, create_sql)
+
+      # Get column list from source table for INSERT
+      col_info <- DBI::dbGetQuery(con, sprintf('PRAGMA src.table_info("%s")', tbl_name))
+      cols <- col_info$name
+      cols_str <- paste(sprintf('"%s"', cols), collapse = ", ")
+
+      # Copy data
+      insert_sql <- sprintf(
+        'INSERT OR REPLACE INTO "%s" (%s) SELECT %s FROM src."%s"',
+        tbl_name, cols_str, cols_str, tbl_name
+      )
+      n_rows <- DBI::dbExecute(con, insert_sql)
+      cat(" ->", n_rows, "rows\n")
+
+      table_stats[[tbl_name]] <- n_rows
+    }
+
+    DBI::dbExecute(con, "COMMIT")
+  }
+
+  # Copy indexes
+  indexes <- DBI::dbGetQuery(con,
+    "SELECT sql FROM src.sqlite_master
+     WHERE type = 'index' AND sql IS NOT NULL"
+  )
+  if (nrow(indexes) > 0) {
+    for (j in seq_len(nrow(indexes))) {
+      idx_sql <- sub(
+        "^CREATE INDEX ",
+        "CREATE INDEX IF NOT EXISTS ",
+        indexes$sql[j],
+        ignore.case = TRUE
+      )
+      # Also handle UNIQUE indexes
+      idx_sql <- sub(
+        "^CREATE UNIQUE INDEX ",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ",
+        idx_sql,
+        ignore.case = TRUE
+      )
+      tryCatch(
+        DBI::dbExecute(con, idx_sql),
+        error = function(e) {
+          cat("  Warning: index creation skipped:", conditionMessage(e), "\n")
+        }
+      )
+    }
+    cat("  Copied", nrow(indexes), "indexes\n")
+  }
+
+  DBI::dbExecute(con, "DETACH DATABASE src")
+  done <- TRUE
+
+  table_stats
+}
+
+#' Merge every source DB in order into the output connection. A source that is
+#' missing is skipped and one that fails is reported, and either way the loop
+#' goes on to the next source.
+#'
+#' @param con         output connection.
+#' @param sources_dir directory the source DBs were downloaded into.
+#' @param dbs         source DB file names, in merge order.
+#' @param tables      per-source allowlists, shaped like source_tables.
+#' @return named list keyed by source file: status "merged" (with file_size and
+#'   rows per table), "skipped" or "error" (with a reason).
+merge_sources <- function(con, sources_dir, dbs = source_dbs, tables = source_tables) {
+  merge_stats <- list()
+
+  for (db_file in dbs) {
+    src_path <- file.path(sources_dir, db_file)
+    cat("--- Processing:", db_file, "---\n")
+
+    if (!file.exists(src_path)) {
+      warning("Source DB not found, skipping: ", src_path, call. = FALSE)
+      merge_stats[[db_file]] <- list(
+        status = "skipped",
+        reason = "file not found"
+      )
+      next
+    }
+
+    file_size <- file.info(src_path)$size
+    cat("  File size:", format(file_size, big.mark = ","), "bytes\n")
+
+    merge_stats[[db_file]] <- tryCatch({
+      list(
+        status = "merged",
+        file_size = file_size,
+        tables = merge_source_db(con, src_path, tables_to_merge_from(db_file, tables))
+      )
+    }, error = function(e) {
+      # merge_source_db has already rolled back and detached.
+      warning("Error processing ", db_file, ": ", conditionMessage(e), call. = FALSE)
+      list(
+        status = "error",
+        reason = conditionMessage(e)
+      )
+    })
+
+    cat("\n")
+  }
+
+  merge_stats
+}
 
 #' Post-merge safety check. When a source DB was present, verify its expected
 #' tables landed in the output; returns the missing names (character(0) if none).
