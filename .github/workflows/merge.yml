@@ -37,6 +37,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # GitHub disables a public repository's scheduled workflows after 60 days
+  # without repository activity, and publishing a release does not count while
+  # a commit does. A job of its own, so a readiness or merge job that fails or
+  # times out still leaves the schedule alive.
+  keepalive:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    # The work takes seconds; the rest is headroom for a slow runner start.
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Update last run timestamp
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for _ in 1 2 3; do
+            # Decide against main as it is now, not the commit this run started
+            # from, so a re-run, a queued run or a push that lands meanwhile
+            # finds the newer commit and stops here instead of conflicting.
+            git fetch --depth=1 origin main
+            git reset --hard FETCH_HEAD
+            # A commit a day is far inside the 60-day window, so skip when main
+            # already has a commit from the last 20 hours.
+            if [ $(( $(date +%s) - $(git log -1 --format=%ct) )) -lt 72000 ]; then
+              echo "main already has a commit from the last 20 hours"
+              exit 0
+            fi
+            echo "Last updated: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" > last-updated.txt
+            git add last-updated.txt
+            git commit -m "chore: update last run time"
+            git push origin HEAD:main && exit 0
+            sleep 10
+          done
+          exit 1
+
   # Cheap: reads each source's publish time and stops the run when the day's
   # pipelines have not finished. Nothing is downloaded or merged here.
   readiness:
