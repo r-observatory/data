@@ -108,7 +108,15 @@ source_tables <- list(
   # only, which vcs_signals_summary already carries.
   "vcs-signals-summary.db"       = c("vcs_signals_summary", "vcs_ai_signals", "vcs_dev_tooling",
                                      "vcs_ai_models", "vcs_ai_rule_inventory",
-                                     "vcs_ai_silent_channels", "repo_package_links"),
+                                     "vcs_ai_silent_channels", "repo_package_links",
+                                     # The rule and ruleset behind each dev-tooling column.
+                                     "vcs_dev_tooling_rules",
+                                     # Read by the AI pages; the producer's read state and search log stay out.
+                                     "vcs_ai_search_coverage", "vcs_ai_review_signals",
+                                     "vcs_ai_outside_prs", "vcs_ai_ruleset_history",
+                                     # The only merged table that carries node ids and current owners,
+                                     # so a moved or renamed repository is counted once.
+                                     "vcs_repo_owner"),
   "cran-task-views.db"           = c("cran_task_views", "cran_task_view_events", "cran_task_view_membership")
 )
 

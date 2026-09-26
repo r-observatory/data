@@ -2,10 +2,78 @@
 testthat::local_edition(3)
 source(file.path(getwd(), "..", "..", "merge_helpers.R"))
 
+# The tables vcs-signals adds, as the producer declares them, plus the three it
+# keeps for its own next run, which must not be copied.
+vcs_added_tables <- c("vcs_dev_tooling_rules", "vcs_ai_search_coverage",
+                      "vcs_ai_review_signals", "vcs_ai_outside_prs",
+                      "vcs_ai_ruleset_history", "vcs_repo_owner")
+vcs_added_sql <- c(
+  "CREATE TABLE IF NOT EXISTS vcs_dev_tooling_rules (col TEXT NOT NULL, source TEXT NOT NULL,
+     rule TEXT NOT NULL, ruleset_version TEXT NOT NULL, PRIMARY KEY (col)) WITHOUT ROWID",
+  "INSERT INTO vcs_dev_tooling_rules VALUES
+     ('has_litedown', 'tree', '_litedown.yml|site/_litedown.yml at root', 'v3 (2026-10-01)')",
+  "CREATE TABLE IF NOT EXISTS vcs_ai_search_coverage (
+     rule_key TEXT PRIMARY KEY, tool TEXT NOT NULL, channel TEXT NOT NULL,
+     rule_rev INTEGER NOT NULL, repos_asked INTEGER NOT NULL, repos_hit INTEGER NOT NULL,
+     repos_refused INTEGER NOT NULL, repos_read_whole INTEGER NOT NULL,
+     last_asked_on TEXT) WITHOUT ROWID",
+  "INSERT INTO vcs_ai_search_coverage VALUES
+     ('msg.claude.session', 'claude', 'commit-credit', 1, 40, 3, 0, 12, '2026-10-05')",
+  "CREATE TABLE IF NOT EXISTS vcs_ai_review_signals (
+     repo_id TEXT NOT NULL, tool TEXT NOT NULL, first_seen_date TEXT,
+     first_seen_censored INTEGER NOT NULL DEFAULT 0, evidence_tiers TEXT,
+     markers TEXT, assisted_commits INTEGER, assisted_measured_on TEXT,
+     last_confirmed_date TEXT,
+     PRIMARY KEY (repo_id, tool)) WITHOUT ROWID",
+  "INSERT INTO vcs_ai_review_signals VALUES
+     ('github.com/o/rtika2', 'coderabbit', '2026-05-01', 0, 'D', '.coderabbit.yaml',
+      NULL, NULL, '2026-10-04')",
+  "CREATE TABLE IF NOT EXISTS vcs_ai_outside_prs (
+     repo_id TEXT NOT NULL, pr_number INTEGER NOT NULL, tool TEXT NOT NULL,
+     found_via TEXT NOT NULL, created_at TEXT NOT NULL,
+     from_fork INTEGER NOT NULL, author_association TEXT NOT NULL,
+     last_confirmed_date TEXT NOT NULL,
+     PRIMARY KEY (repo_id, pr_number, tool)) WITHOUT ROWID",
+  "INSERT INTO vcs_ai_outside_prs VALUES
+     ('github.com/o/rtika2', 12, 'copilot', 'pr-author', '2026-08-01T10:00:00Z', 1,
+      'NONE', '2026-10-04')",
+  "CREATE TABLE IF NOT EXISTS vcs_ai_ruleset_history (
+     ruleset_version TEXT PRIMARY KEY, first_published_on TEXT NOT NULL, change_key TEXT)
+     WITHOUT ROWID",
+  "INSERT INTO vcs_ai_ruleset_history VALUES ('2026-10-01', '2026-10-06', 'ungated-weekly-read')",
+  "CREATE TABLE IF NOT EXISTS vcs_repo_owner (
+     repo_id                 TEXT NOT NULL PRIMARY KEY,
+     node_id                 TEXT NOT NULL,
+     owner_login_current     TEXT NOT NULL,
+     owner_type              TEXT NOT NULL CHECK (owner_type IN ('Organization', 'User')),
+     owner_node_id           TEXT NOT NULL,
+     name_with_owner_current TEXT NOT NULL,
+     observed_on             TEXT NOT NULL
+   ) WITHOUT ROWID",
+  "CREATE INDEX IF NOT EXISTS idx_vro_login      ON vcs_repo_owner(owner_login_current COLLATE NOCASE)",
+  "CREATE INDEX IF NOT EXISTS idx_vro_owner_node ON vcs_repo_owner(owner_node_id)",
+  "CREATE INDEX IF NOT EXISTS idx_vro_node       ON vcs_repo_owner(node_id)",
+  # Two slugs of one repository (the log4r move): both rows land, the viewer counts the node once.
+  "INSERT INTO vcs_repo_owner VALUES
+     ('github.com/johnmyleswhite/log4r', 'MDEwOlJlcG9zaXRvcnk4NjA1Njc=', 'r-lib', 'Organization',
+      'O_rlib', 'r-lib/log4r', '2026-10-04'),
+     ('github.com/r-lib/log4r', 'MDEwOlJlcG9zaXRvcnk4NjA1Njc=', 'r-lib', 'Organization',
+      'O_rlib', 'r-lib/log4r', '2026-10-04')",
+  "CREATE TABLE IF NOT EXISTS vcs_ai_repo_reads (repo_id TEXT PRIMARY KEY,
+     commits_read_on TEXT) WITHOUT ROWID",
+  "INSERT INTO vcs_ai_repo_reads VALUES ('github.com/o/rtika2', '2026-10-04')",
+  "CREATE TABLE IF NOT EXISTS vcs_ai_account_counts (repo_id TEXT NOT NULL, tool TEXT NOT NULL,
+     identity_set TEXT NOT NULL, commits INTEGER NOT NULL, measured_on TEXT NOT NULL,
+     PRIMARY KEY (repo_id, tool, identity_set)) WITHOUT ROWID",
+  "INSERT INTO vcs_ai_account_counts VALUES ('github.com/o/rtika2', 'copilot', 'graphql', 3, '2026-10-04')",
+  "CREATE TABLE IF NOT EXISTS vcs_ai_search_log (repo_id TEXT NOT NULL, rule_key TEXT NOT NULL,
+     asked_on TEXT NOT NULL, PRIMARY KEY (repo_id, rule_key)) WITHOUT ROWID",
+  "INSERT INTO vcs_ai_search_log VALUES ('github.com/o/rtika2', 'msg.claude.session', '2026-10-05')")
+
 # A cut-down vcs-signals-summary.db. The real one carries more columns and
 # tables; what matters here is that the allowlist, the verbatim CREATE TABLE
 # and the index copy all run against a real attached SQLite file.
-write_vcs_summary <- function(path, with_links) {
+write_vcs_summary <- function(path, with_links, with_added = FALSE) {
   con <- DBI::dbConnect(RSQLite::SQLite(), path)
   on.exit(DBI::dbDisconnect(con), add = TRUE)
   DBI::dbExecute(con, "CREATE TABLE vcs_signals_summary (
@@ -33,6 +101,7 @@ write_vcs_summary <- function(path, with_links) {
       ('github.com/o/rtika2', 'rtika2', 'cran', '2026-07-07', '2026-09-14'),
       ('github.com/b/limma', 'limma', 'bioc', '2026-07-07', '2026-09-14')")
   }
+  if (with_added) for (stmt in vcs_added_sql) DBI::dbExecute(con, stmt)
   invisible(path)
 }
 
@@ -198,6 +267,7 @@ test_that("a summary published before the link table existed still merges", {
   expect_equal(stats$vcs_signals_summary, 2)
   expect_false("repo_package_links" %in% output_tables(con))
   expect_null(stats$repo_package_links)
+  expect_false(any(vcs_added_tables %in% output_tables(con)))
   # Detached again, so the next source in the loop can attach as src.
   expect_false("src" %in% DBI::dbGetQuery(con, "PRAGMA database_list")$name)
 })
@@ -328,4 +398,78 @@ test_that("a summary column the pipeline adds or retires reaches observatory.db 
                c("package", "version", "input_kind"))
   expect_equal(DBI::dbGetQuery(con, "SELECT input_kind FROM cran_code_summary")$input_kind,
                "release")
+})
+
+test_that("the added vcs-signals tables land with their keys, and the read state stays out", {
+  dir <- withr::local_tempdir()
+  write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE, with_added = TRUE)
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  stats <- quiet_merge_sources(con, dir)[["vcs-signals-summary.db"]]$tables
+
+  expect_equal(unlist(stats[vcs_added_tables]),
+               c(vcs_dev_tooling_rules = 1, vcs_ai_search_coverage = 1,
+                 vcs_ai_review_signals = 1, vcs_ai_outside_prs = 1,
+                 vcs_ai_ruleset_history = 1, vcs_repo_owner = 2))
+  ddl <- DBI::dbGetQuery(con, sprintf(
+    "SELECT name, sql FROM main.sqlite_master WHERE type = 'table' AND name IN (%s)",
+    paste0("'", vcs_added_tables, "'", collapse = ", ")))
+  expect_setequal(ddl$name, vcs_added_tables)
+  expect_true(all(grepl("WITHOUT ROWID", ddl$sql, fixed = TRUE)))
+  expect_error(DBI::dbExecute(con, "INSERT INTO vcs_ai_outside_prs VALUES
+    ('github.com/o/rtika2', 12, 'copilot', 'pr-author', '2026-08-02T10:00:00Z', 1,
+     'NONE', '2026-10-05')"), "UNIQUE")
+  expect_false(any(c("vcs_ai_repo_reads", "vcs_ai_account_counts", "vcs_ai_search_log")
+                   %in% output_tables(con)))
+})
+
+test_that("the repository owner table keeps its owner type check and its three indexes", {
+  dir <- withr::local_tempdir()
+  write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE, with_added = TRUE)
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  quiet_merge_sources(con, dir)
+
+  expect_error(DBI::dbExecute(con, "INSERT INTO vcs_repo_owner VALUES
+    ('github.com/x/y', 'R_x', 'x', 'Bot', 'O_x', 'x/y', '2026-10-04')"), "CHECK constraint failed")
+  idx <- DBI::dbGetQuery(con, "SELECT name, sql FROM main.sqlite_master
+                               WHERE type = 'index' AND tbl_name = 'vcs_repo_owner'
+                                 AND sql IS NOT NULL")
+  expect_setequal(idx$name, c("idx_vro_login", "idx_vro_owner_node", "idx_vro_node"))
+  expect_match(idx$sql[idx$name == "idx_vro_login"], "COLLATE NOCASE", fixed = TRUE)
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(DISTINCT node_id) AS n FROM vcs_repo_owner")$n, 1)
+})
+
+test_that("columns vcs-signals adds with ALTER TABLE arrive with their tables", {
+  # ensure_series_schema adds new columns with ALTER TABLE ADD COLUMN; SQLite rewrites
+  # the stored CREATE TABLE, which is what the merge copies.
+  dir <- withr::local_tempdir()
+  write_db(file.path(dir, "vcs-signals-summary.db"), c(
+    "CREATE TABLE vcs_dev_tooling (repo_id TEXT NOT NULL, last_scanned TEXT,
+       has_pr_template INTEGER, PRIMARY KEY (repo_id)) WITHOUT ROWID",
+    "ALTER TABLE vcs_dev_tooling ADD COLUMN ruleset_version TEXT",
+    "ALTER TABLE vcs_dev_tooling ADD COLUMN pr_template_source TEXT",
+    "INSERT INTO vcs_dev_tooling VALUES
+       ('github.com/r-lib/log4r', '2026-10-04', 1, 'v3 (2026-10-01)', 'account_default')",
+    "CREATE TABLE vcs_ai_signals (repo_id TEXT NOT NULL, tool TEXT NOT NULL,
+       authored_commits INTEGER, assisted_commits INTEGER, PRIMARY KEY (repo_id, tool))",
+    "ALTER TABLE vcs_ai_signals ADD COLUMN authored_measured_on TEXT",
+    "ALTER TABLE vcs_ai_signals ADD COLUMN assisted_measured_on TEXT",
+    "INSERT INTO vcs_ai_signals VALUES
+       ('github.com/o/rtika2', 'claude', 4, 2, '2026-10-04', '2026-10-05')"))
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  quiet_merge_sources(con, dir)
+
+  got <- DBI::dbGetQuery(con, "SELECT ruleset_version, pr_template_source FROM vcs_dev_tooling")
+  expect_equal(got$ruleset_version, "v3 (2026-10-01)")
+  expect_equal(got$pr_template_source, "account_default")
+  expect_match(DBI::dbGetQuery(con, "SELECT sql FROM main.sqlite_master
+                                     WHERE name = 'vcs_dev_tooling'")$sql,
+               "WITHOUT ROWID", fixed = TRUE)
+  got <- DBI::dbGetQuery(con, "SELECT authored_measured_on, assisted_measured_on FROM vcs_ai_signals")
+  expect_equal(unlist(got), c(authored_measured_on = "2026-10-04", assisted_measured_on = "2026-10-05"))
 })

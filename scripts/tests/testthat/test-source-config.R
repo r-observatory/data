@@ -96,8 +96,16 @@ test_that("vcs-signals is registered in both merger lists", {
     tables_to_merge_from("vcs-signals-summary.db", source_tables),
     c("vcs_signals_summary", "vcs_ai_signals", "vcs_dev_tooling",
       "vcs_ai_models", "vcs_ai_rule_inventory", "vcs_ai_silent_channels",
-      "repo_package_links")
+      "repo_package_links", "vcs_dev_tooling_rules",
+      "vcs_ai_search_coverage", "vcs_ai_review_signals", "vcs_ai_outside_prs",
+      "vcs_ai_ruleset_history", "vcs_repo_owner")
   )
+})
+
+test_that("the weekly read state, account counts and search log stay in vcs-signals", {
+  # The next run depends on them and no page reads them.
+  allow <- tables_to_merge_from("vcs-signals-summary.db", source_tables)
+  expect_false(any(c("vcs_ai_repo_reads", "vcs_ai_account_counts", "vcs_ai_search_log") %in% allow))
 })
 
 test_that("the merge workflow downloads vcs-signals", {
