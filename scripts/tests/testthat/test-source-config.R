@@ -26,11 +26,11 @@ test_that("cran-coverage.db is registered in both merger lists", {
 test_that("code-metrics DBs expose summary, api_history and detail tables", {
   expect_equal(
     tables_to_merge_from("cran-code-metrics.db", source_tables),
-    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_code_churn", "cran_archived_meta", "cran_author_package_span", "cran_vignettes")
+    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_code_churn", "cran_archived_meta", "cran_author_package_span", "cran_vignettes", "cran_description_fields", "cran_release_notes")
   )
   expect_equal(
     tables_to_merge_from("bioc-code-metrics.db", source_tables),
-    c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges", "bioc_code_churn")
+    c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges", "bioc_code_churn", "bioc_description_fields", "bioc_release_notes")
   )
 })
 
@@ -44,11 +44,11 @@ test_that("code-metrics DBs carry code tables (plus cran archived metadata) afte
   # cran_archived_meta table that powers removed-package detail pages.
   expect_equal(
     tables_to_merge_from("cran-code-metrics.db", source_tables),
-    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_code_churn", "cran_archived_meta", "cran_author_package_span", "cran_vignettes")
+    c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_code_churn", "cran_archived_meta", "cran_author_package_span", "cran_vignettes", "cran_description_fields", "cran_release_notes")
   )
   expect_equal(
     tables_to_merge_from("bioc-code-metrics.db", source_tables),
-    c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges", "bioc_code_churn")
+    c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges", "bioc_code_churn", "bioc_description_fields", "bioc_release_notes")
   )
 })
 
@@ -96,8 +96,16 @@ test_that("vcs-signals is registered in both merger lists", {
     tables_to_merge_from("vcs-signals-summary.db", source_tables),
     c("vcs_signals_summary", "vcs_ai_signals", "vcs_dev_tooling",
       "vcs_ai_models", "vcs_ai_rule_inventory", "vcs_ai_silent_channels",
-      "repo_package_links")
+      "repo_package_links", "vcs_dev_tooling_rules",
+      "vcs_ai_search_coverage", "vcs_ai_review_signals", "vcs_ai_outside_prs",
+      "vcs_ai_ruleset_history", "vcs_repo_owner")
   )
+})
+
+test_that("the weekly read state, account counts and search log stay in vcs-signals", {
+  # The next run depends on them and no page reads them.
+  allow <- tables_to_merge_from("vcs-signals-summary.db", source_tables)
+  expect_false(any(c("vcs_ai_repo_reads", "vcs_ai_account_counts", "vcs_ai_search_log") %in% allow))
 })
 
 test_that("the merge workflow downloads vcs-signals", {
@@ -154,4 +162,20 @@ test_that("the vignette table is carried, because only it names the vignettes", 
   # them needs the rows themselves.
   allow <- tables_to_merge_from("cran-code-metrics.db", source_tables)
   expect_true("cran_vignettes" %in% allow)
+})
+
+test_that("the per-version DESCRIPTION and release notes history stays in the pipelines", {
+  # One uncapped row per analysed version; observatory.db takes the latest-only tables.
+  history <- c("description_history", "release_notes_history", "release_text_versions")
+  expect_false(any(paste0("cran_", history) %in% tables_to_merge_from("cran-code-metrics.db", source_tables)))
+  expect_false(any(paste0("bioc_", history) %in% tables_to_merge_from("bioc-code-metrics.db", source_tables)))
+  expect_false("cran-release-text.db" %in% source_dbs)
+})
+
+test_that("the Bioconductor catalogue carries its vignette list", {
+  expect_equal(
+    tables_to_merge_from("bioconductor-metadata.db", source_tables),
+    c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges",
+      "bioc_names_all", "bioc_vignettes")
+  )
 })

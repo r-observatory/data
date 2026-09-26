@@ -76,7 +76,8 @@ source_tables <- list(
   "c2d4u-downloads-summary.db"    = c("c2d4u_downloads_summary"),
   "bioconductor-summary.db"      = c("bioc_downloads_summary"),
   "queue.db"                     = NULL,
-  "bioconductor-metadata.db"     = c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges", "bioc_names_all"),
+  # bioc_vignettes is the current release's vignette list, one row per file with its link.
+  "bioconductor-metadata.db"     = c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges", "bioc_names_all", "bioc_vignettes"),
   "cran-archive.db"              = c("cran_archive", "cran_archive_events", "cran_names_all", "cran_archive_history", "cran_archive_lineage", "cran_archive_action_counts"),
   # Code tables only; dataset tables now live in the *-data-metrics.db sources.
   # The dataset row_sketch table is deliberately EXCLUDED: it is an offline
@@ -86,9 +87,11 @@ source_tables <- list(
   # ships, what they render to, and who wrote them. The summary's n_vignettes
   # counts the same rows, so a page can show the count without this table and
   # can name the vignettes only with it.
-  "cran-code-metrics.db"         = c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_code_churn", "cran_archived_meta", "cran_author_package_span", "cran_vignettes"),
+  # *_description_fields and *_release_notes hold the latest analysed version only. The
+  # per-version history stays with each pipeline (cran-release-text.db, bioc-code-metrics.db).
+  "cran-code-metrics.db"         = c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_code_churn", "cran_archived_meta", "cran_author_package_span", "cran_vignettes", "cran_description_fields", "cran_release_notes"),
   "cran-data-metrics.db"         = c("cran_datasets", "cran_dataset_versions", "cran_dataset_contents"),
-  "bioc-code-metrics.db"         = c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges", "bioc_code_churn"),
+  "bioc-code-metrics.db"         = c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges", "bioc_code_churn", "bioc_description_fields", "bioc_release_notes"),
   "bioc-data-metrics.db"         = c("bioc_datasets", "bioc_dataset_versions", "bioc_dataset_contents"),
   "cran-coverage.db"             = c("coverage_summary", "coverage_file", "coverage_function"),
   # vcs_ai_models is one row per repo per tool per model; vcs_ai_rule_inventory
@@ -105,7 +108,15 @@ source_tables <- list(
   # only, which vcs_signals_summary already carries.
   "vcs-signals-summary.db"       = c("vcs_signals_summary", "vcs_ai_signals", "vcs_dev_tooling",
                                      "vcs_ai_models", "vcs_ai_rule_inventory",
-                                     "vcs_ai_silent_channels", "repo_package_links"),
+                                     "vcs_ai_silent_channels", "repo_package_links",
+                                     # The rule and ruleset behind each dev-tooling column.
+                                     "vcs_dev_tooling_rules",
+                                     # Read by the AI pages; the producer's read state and search log stay out.
+                                     "vcs_ai_search_coverage", "vcs_ai_review_signals",
+                                     "vcs_ai_outside_prs", "vcs_ai_ruleset_history",
+                                     # The only merged table that carries node ids and current owners,
+                                     # so a moved or renamed repository is counted once.
+                                     "vcs_repo_owner"),
   "cran-task-views.db"           = c("cran_task_views", "cran_task_view_events", "cran_task_view_membership")
 )
 
