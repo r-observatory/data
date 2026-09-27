@@ -151,6 +151,70 @@ test_that("a source removed for failing its integrity check is named as corrupt"
   expect_true(any(grepl("integrity_check", res$problems)))
 })
 
+test_that("a source that did not merge whole fails the run but still publishes", {
+  res <- evaluate_freshness_gate(
+    meta = meta_row("vcs-signals", "2026-07-22T09:00:00Z", "2026-07-22T09:00:00Z",
+                    "2026-07-22T09:00:00Z", 30L),
+    present_dbs = "vcs-signals-summary.db",
+    all_source_dbs = "vcs-signals-summary.db",
+    config = list(cfg_entry("vcs-signals", "vcs-signals-summary.db")),
+    now_iso = now,
+    fatal_specs = list(),
+    merge_failed = c("vcs-signals-summary.db" =
+                       "table repo_package_links: table repo_package_links has no column named package"),
+    output_bytes = NA_real_)
+
+  expect_equal(res$rows$verdict, "merge error")
+  expect_true(res$rows$fails)
+  expect_true(res$run_failed)
+  expect_true(res$publish_allowed)
+  expect_true(any(grepl("vcs-signals-summary.db.*repo_package_links", res$problems)))
+})
+
+test_that("a fatal source with a failed table still publishes while its floors hold", {
+  res <- evaluate_freshness_gate(
+    meta = meta_row("cran-metadata", "2026-07-22T08:11:22Z", "2026-07-22T08:11:22Z",
+                    "2026-07-22T08:11:22Z", 30L),
+    present_dbs = "metadata.db",
+    all_source_dbs = "metadata.db",
+    config = list(cfg_entry("cran-metadata", "metadata.db")),
+    now_iso = now,
+    row_counts = list(authors = 62393, cran_check_results = 315848),
+    merge_failed = c("metadata.db" = "table package_news: disk I/O error"),
+    output_bytes = NA_real_)
+
+  expect_equal(res$rows$verdict, "merge error")
+  expect_true(res$publish_allowed)
+  expect_true(res$run_failed)
+  expect_equal(res$fatal_problems, character(0))
+})
+
+test_that("a fatal source whose floor table failed to copy is refused as short rows", {
+  res <- evaluate_freshness_gate(
+    meta = meta_row("cran-feed", "2026-07-22T13:27:57Z", "2026-07-22T13:27:57Z",
+                    "2026-07-22T13:27:57Z", 8L),
+    present_dbs = "feed.db",
+    all_source_dbs = "feed.db",
+    config = list(cfg_entry("cran-feed", "feed.db", 8L)),
+    now_iso = now,
+    row_counts = list(packages = 0),
+    merge_failed = c("feed.db" = "table packages: disk I/O error"),
+    output_bytes = NA_real_)
+
+  expect_equal(res$rows$verdict, "short rows")
+  expect_false(res$publish_allowed)
+})
+
+test_that("the merge hands its failures to the gate", {
+  merge <- readLines(file.path(getwd(), "..", "..", "merge.R"))
+  gate <- readLines(file.path(getwd(), "..", "..", "check-freshness.R"))
+  expect_true(any(grepl("write_merge_failures(", merge, fixed = TRUE)))
+  expect_true(any(grepl(".merge-failed", merge, fixed = TRUE)))
+  expect_true(any(grepl("read_merge_failures(", gate, fixed = TRUE)))
+  expect_true(any(grepl(".merge-failed", gate, fixed = TRUE)))
+  expect_true(any(grepl("merge_failed = merge_failed", gate, fixed = TRUE)))
+})
+
 # ---------------------------------------------------------------------------
 # Fatal sources
 # ---------------------------------------------------------------------------

@@ -206,16 +206,18 @@ quiet_merge_source_db <- function(con, src_path, allow) {
 
 # merge_sources walks the whole source list and a test directory holds only the
 # sources the test is about, so the rest are reported missing. Those warnings
-# are expected here; any other warning still reaches the test.
+# are expected here; any other warning still reaches the test. The log rides
+# along as the "log" attribute.
 quiet_merge_sources <- function(con, sources_dir) {
   out <- NULL
-  withCallingHandlers(
+  log <- withCallingHandlers(
     utils::capture.output(out <- merge_sources(con, sources_dir)),
     warning = function(w) {
       if (startsWith(conditionMessage(w), "Source DB not found")) {
         invokeRestart("muffleWarning")
       }
     })
+  attr(out, "log") <- log
   out
 }
 
@@ -261,18 +263,19 @@ test_that("a summary published before the link table existed still merges", {
   withr::defer(DBI::dbDisconnect(con))
 
   expect_no_error(
-    stats <- quiet_merge_source_db(con, src,
-                                   tables_to_merge_from("vcs-signals-summary.db", source_tables)))
+    res <- quiet_merge_source_db(con, src,
+                                 tables_to_merge_from("vcs-signals-summary.db", source_tables)))
 
-  expect_equal(stats$vcs_signals_summary, 2)
+  expect_equal(res$tables$vcs_signals_summary, 2)
   expect_false("repo_package_links" %in% output_tables(con))
-  expect_null(stats$repo_package_links)
+  expect_null(res$tables$repo_package_links)
+  expect_length(res$failed, 0)
   expect_false(any(vcs_added_tables %in% output_tables(con)))
   # Detached again, so the next source in the loop can attach as src.
   expect_false("src" %in% DBI::dbGetQuery(con, "PRAGMA database_list")$name)
 })
 
-test_that("a copy that fails partway rolls back and lets go of src", {
+test_that("a table that fails to copy costs only that table and lets go of src", {
   dir <- withr::local_tempdir()
   src <- write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE)
   con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
@@ -281,40 +284,293 @@ test_that("a copy that fails partway rolls back and lets go of src", {
   # the insert fails after vcs_signals_summary has been copied.
   DBI::dbExecute(con, "CREATE TABLE repo_package_links (repo_id TEXT)")
 
-  expect_error(
-    quiet_merge_source_db(con, src,
-                          tables_to_merge_from("vcs-signals-summary.db", source_tables)),
-    "no column named package")
+  expect_no_error(
+    res <- quiet_merge_source_db(con, src,
+                                 tables_to_merge_from("vcs-signals-summary.db", source_tables)))
 
+  expect_named(res$failed, "repo_package_links")
+  expect_match(res$failed[["repo_package_links"]], "no column named package")
   expect_false("src" %in% DBI::dbGetQuery(con, "PRAGMA database_list")$name)
-  # The source lands whole or not at all.
-  expect_false("vcs_signals_summary" %in% output_tables(con))
+  # The tables that did copy stay.
+  expect_equal(res$tables$vcs_signals_summary, 2)
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM vcs_signals_summary")$n, 2)
+  expect_null(res$tables$repo_package_links)
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM repo_package_links")$n, 0)
+  # Its index is not put on the other source's table.
+  expect_false("idx_rpl_package" %in%
+                 DBI::dbGetQuery(con, "PRAGMA main.index_list(repo_package_links)")$name)
 })
 
-test_that("a source that fails partway does not cost the sources after it", {
+test_that("a table whose rows fail partway leaves nothing behind, not even the table", {
+  dir <- withr::local_tempdir()
+  src <- write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE,
+                           with_added = TRUE)
+  # A row the owner-type check refuses, written with the check switched off, so
+  # the copy creates vcs_repo_owner and then fails on its second row.
+  write_db(src, c("PRAGMA ignore_check_constraints = 1",
+                  "INSERT INTO vcs_repo_owner VALUES
+                     ('github.com/x/y', 'R_x', 'x', 'Bot', 'O_x', 'x/y', '2026-10-04')"))
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  res <- quiet_merge_source_db(con, src,
+                               tables_to_merge_from("vcs-signals-summary.db", source_tables))
+
+  expect_named(res$failed, "vcs_repo_owner")
+  expect_match(res$failed[["vcs_repo_owner"]], "CHECK constraint failed")
+  expect_false("vcs_repo_owner" %in% output_tables(con))
+  expect_true(all(c("vcs_signals_summary", "repo_package_links", setdiff(vcs_added_tables, "vcs_repo_owner"))
+                  %in% output_tables(con)))
+  # Its three indexes are accounted for as belonging to a table that failed.
+  vro <- res$indexes[res$indexes$table == "vcs_repo_owner", , drop = FALSE]
+  expect_setequal(vro$index, c("idx_vro_login", "idx_vro_owner_node", "idx_vro_node"))
+  expect_true(all(vro$outcome == "skipped"))
+  expect_true(all(grepl("failed", vro$note)))
+})
+
+test_that("a source with one failed table is still an error, and the sources after it merge", {
   dir <- withr::local_tempdir()
   # queue.db merges every table it has. One named like a vcs table but with
   # other columns makes the vcs copy fail partway, the source just before the
   # task views.
   write_db(file.path(dir, "queue.db"), "CREATE TABLE repo_package_links (repo_id TEXT)")
-  write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE)
+  write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE,
+                    with_added = TRUE)
   write_task_views(file.path(dir, "cran-task-views.db"))
   con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
   withr::defer(DBI::dbDisconnect(con))
 
   expect_warning(stats <- quiet_merge_sources(con, dir),
-                 "Error processing vcs-signals-summary.db")
+                 "Error processing vcs-signals-summary.db.*repo_package_links")
 
   status <- vapply(stats, function(s) s$status, character(1))
   expect_equal(status[c("queue.db", "vcs-signals-summary.db", "cran-task-views.db")],
                c("queue.db" = "merged", "vcs-signals-summary.db" = "error",
                  "cran-task-views.db" = "merged"))
+  vcs <- stats[["vcs-signals-summary.db"]]
+  expect_named(vcs$failed_tables, "repo_package_links")
+  # Every other allowlisted vcs table still lands.
+  expect_setequal(names(vcs$tables), c("vcs_signals_summary", vcs_added_tables))
+  expect_true(all(c("vcs_signals_summary", vcs_added_tables) %in% output_tables(con)))
   # merge.R refuses the release when these are missing.
   expect_equal(
     missing_expected_tables(TRUE, c("cran_task_views", "cran_task_view_events",
                                     "cran_task_view_membership"),
                             output_tables(con)),
     character(0))
+})
+
+test_that("the sources that did not merge whole are named with what failed", {
+  dir <- withr::local_tempdir()
+  write_db(file.path(dir, "queue.db"), "CREATE TABLE repo_package_links (repo_id TEXT)")
+  write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE)
+  # Not a database at all, so nothing of it merges.
+  writeLines("not a database", file.path(dir, "cran-archive.db"))
+  write_task_views(file.path(dir, "cran-task-views.db"))
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+  stats <- suppressWarnings(quiet_merge_sources(con, dir))
+
+  failures <- merge_failures(stats)
+
+  expect_named(failures, c("cran-archive.db", "vcs-signals-summary.db"), ignore.order = TRUE)
+  expect_match(failures[["vcs-signals-summary.db"]],
+               "repo_package_links.*no column named package")
+  expect_match(failures[["cran-archive.db"]], "nothing merged")
+  expect_false(any(grepl("[\t\n]", failures)))
+})
+
+test_that("the merge failures survive the trip to the gate through a file", {
+  dir <- withr::local_tempdir()
+  path <- file.path(dir, ".merge-failed")
+  failures <- c("vcs-signals-summary.db" = "table repo_package_links: no column named package",
+                "cran-archive.db" = "nothing merged: file is not a database")
+
+  write_merge_failures(path, failures)
+  expect_equal(read_merge_failures(path), failures)
+
+  # Nothing failed: no file, and a stale one from an earlier run is removed.
+  write_merge_failures(path, character())
+  expect_false(file.exists(path))
+  expect_equal(read_merge_failures(path), character())
+})
+
+# The index DDL both code-metrics producers declare. They reuse the same index
+# names on their own tables, and index names are one namespace per database.
+write_indexed_code_metrics <- function(path, prefix, pad = " ") {
+  write_db(path, c(
+    sprintf("CREATE TABLE %s_code_summary (package TEXT, version TEXT, loc_r INTEGER)", prefix),
+    sprintf("INSERT INTO %s_code_summary VALUES ('p', '1.0', 10), ('p', '1.1', 12)", prefix),
+    sprintf("CREATE UNIQUE INDEX idx_summary_pkg_ver%sON %s_code_summary(package, version)",
+            pad, prefix),
+    sprintf("CREATE TABLE %s_api_history (package TEXT, version TEXT, n_exports INTEGER)", prefix),
+    sprintf("INSERT INTO %s_api_history VALUES ('p', '1.0', 3), ('p', '1.1', 4)", prefix),
+    sprintf("CREATE INDEX idx_api_pkg_ver ON %s_api_history(package, version)", prefix),
+    sprintf("CREATE TABLE %s_code_churn (package TEXT, version TEXT, file TEXT,
+               added INTEGER, deleted INTEGER)", prefix),
+    sprintf("INSERT INTO %s_code_churn VALUES ('p', '1.1', 'R/a.R', 5, 1)", prefix),
+    sprintf("CREATE INDEX idx_churn_pkg_ver ON %s_code_churn(package, version)", prefix),
+    sprintf("CREATE INDEX idx_churn_pkg ON %s_code_churn(package)", prefix)))
+}
+
+indexes_on <- function(con, tbl) {
+  DBI::dbGetQuery(con, "SELECT name, sql FROM main.sqlite_master
+                        WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL
+                        ORDER BY name", params = list(tbl))
+}
+
+index_columns <- function(con, idx) {
+  DBI::dbGetQuery(con, sprintf('PRAGMA main.index_info("%s")', idx))$name
+}
+
+merge_code_metrics_pair <- function(dir) {
+  write_indexed_code_metrics(file.path(dir, "cran-code-metrics.db"), "cran")
+  # The Bioconductor summary index is declared with a run of spaces before ON.
+  write_indexed_code_metrics(file.path(dir, "bioc-code-metrics.db"), "bioc", pad = "     ")
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  list(con = con, stats = quiet_merge_sources(con, dir))
+}
+
+test_that("an index name the CRAN tables already hold lands on the Bioconductor table under its table's name", {
+  dir <- withr::local_tempdir()
+  m <- merge_code_metrics_pair(dir)
+  con <- m$con
+  withr::defer(DBI::dbDisconnect(con))
+
+  expect_equal(indexes_on(con, "cran_api_history")$name, "idx_api_pkg_ver")
+  expect_equal(indexes_on(con, "cran_code_churn")$name, c("idx_churn_pkg", "idx_churn_pkg_ver"))
+  expect_equal(indexes_on(con, "cran_code_summary")$name, "idx_summary_pkg_ver")
+
+  expect_equal(indexes_on(con, "bioc_api_history")$name, "bioc_api_history__idx_api_pkg_ver")
+  expect_equal(indexes_on(con, "bioc_code_churn")$name,
+               c("bioc_code_churn__idx_churn_pkg", "bioc_code_churn__idx_churn_pkg_ver"))
+  expect_equal(indexes_on(con, "bioc_code_summary")$name, "bioc_code_summary__idx_summary_pkg_ver")
+  expect_equal(index_columns(con, "bioc_api_history__idx_api_pkg_ver"), c("package", "version"))
+  expect_equal(index_columns(con, "bioc_code_churn__idx_churn_pkg"), "package")
+
+  expect_equal(m$stats[["bioc-code-metrics.db"]]$status, "merged")
+})
+
+test_that("the renamed summary index is still unique", {
+  dir <- withr::local_tempdir()
+  m <- merge_code_metrics_pair(dir)
+  con <- m$con
+  withr::defer(DBI::dbDisconnect(con))
+
+  il <- DBI::dbGetQuery(con, "PRAGMA main.index_list(bioc_code_summary)")
+  expect_equal(il$unique[il$name == "bioc_code_summary__idx_summary_pkg_ver"], 1L)
+  expect_error(DBI::dbExecute(con, "INSERT INTO bioc_code_summary VALUES ('p', '1.0', 99)"),
+               "UNIQUE")
+})
+
+test_that("every renamed index is written to the merge log and kept in the stats", {
+  dir <- withr::local_tempdir()
+  write_indexed_code_metrics(file.path(dir, "cran-code-metrics.db"), "cran")
+  write_indexed_code_metrics(file.path(dir, "bioc-code-metrics.db"), "bioc")
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  stats <- quiet_merge_sources(con, dir)
+  log <- attr(stats, "log")
+
+  expect_true(any(grepl("idx_api_pkg_ver.*cran_api_history.*bioc_api_history__idx_api_pkg_ver", log)))
+  idx <- stats[["bioc-code-metrics.db"]]$indexes
+  renamed <- idx[idx$outcome == "renamed", , drop = FALSE]
+  expect_setequal(renamed$created_as,
+                  c("bioc_api_history__idx_api_pkg_ver", "bioc_code_churn__idx_churn_pkg",
+                    "bioc_code_churn__idx_churn_pkg_ver", "bioc_code_summary__idx_summary_pkg_ver"))
+  expect_true(all(stats[["cran-code-metrics.db"]]$indexes$outcome == "created"))
+})
+
+test_that("an index name is matched without regard to case", {
+  dir <- withr::local_tempdir()
+  write_indexed_code_metrics(file.path(dir, "cran-code-metrics.db"), "cran")
+  write_db(file.path(dir, "bioc-code-metrics.db"), c(
+    "CREATE TABLE bioc_api_history (package TEXT, version TEXT)",
+    "INSERT INTO bioc_api_history VALUES ('p', '1.0')",
+    "CREATE INDEX IDX_API_PKG_VER ON bioc_api_history(package, version)"))
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  quiet_merge_sources(con, dir)
+
+  expect_equal(indexes_on(con, "bioc_api_history")$name, "bioc_api_history__IDX_API_PKG_VER")
+})
+
+test_that("a qualified name that is itself taken fails the source rather than going quiet", {
+  dir <- withr::local_tempdir()
+  # queue.db merges every table it has, and this one takes the qualified name.
+  write_db(file.path(dir, "queue.db"), "CREATE TABLE bioc_api_history__idx_api_pkg_ver (x TEXT)")
+  write_indexed_code_metrics(file.path(dir, "cran-code-metrics.db"), "cran")
+  write_indexed_code_metrics(file.path(dir, "bioc-code-metrics.db"), "bioc")
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  expect_warning(stats <- quiet_merge_sources(con, dir),
+                 "Error processing bioc-code-metrics.db.*idx_api_pkg_ver")
+
+  bioc <- stats[["bioc-code-metrics.db"]]
+  expect_equal(bioc$status, "error")
+  failed <- bioc$indexes[bioc$indexes$outcome == "failed", , drop = FALSE]
+  expect_equal(failed$index, "idx_api_pkg_ver")
+  expect_match(merge_failures(stats)[["bioc-code-metrics.db"]], "idx_api_pkg_ver")
+  # The data itself landed, and the other renamed indexes still went on.
+  expect_equal(bioc$tables$bioc_api_history, 2)
+  expect_true("bioc_code_churn__idx_churn_pkg_ver" %in% indexes_on(con, "bioc_code_churn")$name)
+})
+
+test_that("an index on a table the allowlist leaves out is skipped and says why", {
+  dir <- withr::local_tempdir()
+  write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE)
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  vcs <- quiet_merge_sources(con, dir)[["vcs-signals-summary.db"]]
+
+  expect_equal(vcs$status, "merged")
+  rp <- vcs$indexes[vcs$indexes$index == "idx_rp_package", , drop = FALSE]
+  expect_equal(rp$outcome, "skipped")
+  expect_match(rp$note, "not copied")
+  expect_length(merge_failures(list("vcs-signals-summary.db" = vcs)), 0)
+})
+
+test_that("a renamed index keeps its UNIQUE, collation and WHERE clause", {
+  expect_equal(index_sql_as('CREATE INDEX "Idx One"   ON a(x)', "a__Idx One"),
+               'CREATE INDEX "a__Idx One" ON a(x)')
+  expect_equal(index_sql_as("CREATE UNIQUE INDEX [idx2] ON a(y) WHERE y > 0", "a__idx2"),
+               'CREATE UNIQUE INDEX "a__idx2" ON a(y) WHERE y > 0')
+  expect_equal(index_sql_as("CREATE INDEX idx_vro_login ON vcs_repo_owner(owner_login_current COLLATE NOCASE)",
+                            "vcs_repo_owner__idx_vro_login"),
+               'CREATE INDEX "vcs_repo_owner__idx_vro_login" ON vcs_repo_owner(owner_login_current COLLATE NOCASE)')
+  expect_equal(index_sql_as("CREATE UNIQUE INDEX idx_summary_pkg_ver     ON bioc_code_summary(package, version)",
+                            "bioc_code_summary__idx_summary_pkg_ver"),
+               'CREATE UNIQUE INDEX "bioc_code_summary__idx_summary_pkg_ver" ON bioc_code_summary(package, version)')
+  expect_true(is.na(index_sql_as("CREATE TABLE t (x)", "t__x")))
+})
+
+test_that("a table-qualified index name fits the 64 characters MySQL allows", {
+  expect_equal(qualified_index_name("bioc_api_history", "idx_api_pkg_ver"),
+               "bioc_api_history__idx_api_pkg_ver")
+  long <- qualified_index_name(strrep("t", 40), strrep("i", 40))
+  expect_equal(nchar(long), 64L)
+  expect_true(startsWith(long, paste0(strrep("t", 40), "__")))
+})
+
+test_that("a source that did not merge whole says so in the release notes", {
+  stats <- list(
+    status = "error", file_size = 2048,
+    tables = list(vcs_signals_summary = 2, vcs_repo_owner = 2),
+    failed_tables = c(repo_package_links = "table repo_package_links has no column named package"),
+    indexes = data.frame(index = character(), table = character(), created_as = character(),
+                         outcome = character(), note = character()))
+
+  row <- source_note_row("vcs-signals-summary.db", stats)
+
+  expect_match(row, "| vcs-signals-summary.db | error, failed: repo_package_links |", fixed = TRUE)
+  expect_match(row, "vcs_signals_summary, vcs_repo_owner (2)", fixed = TRUE)
+  expect_match(row, "| 4 |", fixed = TRUE)
+  expect_equal(source_note_row("x.db", list(status = "error", reason = "boom")),
+               "| x.db | error | - | - | - |")
 })
 
 test_that("the latest DESCRIPTION fields, release notes and Bioconductor vignettes land", {

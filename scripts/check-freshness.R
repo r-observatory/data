@@ -84,6 +84,10 @@ if (file.exists(if_path)) {
   integrity_failed <- integrity_failed[nzchar(integrity_failed)]
 }
 
+# merge.R names the sources it could not copy whole, which are otherwise
+# present and would pass.
+merge_failed <- read_merge_failures(file.path(sources_dir, ".merge-failed"))
+
 # Row counts for the fatal floors only, read from the merged output. A table
 # that did not land counts as zero rather than being skipped.
 floor_tables <- unique(unlist(lapply(gate_fatal_sources(), function(s) names(s$floors))))
@@ -105,6 +109,7 @@ res <- evaluate_freshness_gate(
   row_counts = row_counts,
   output_bytes = output_bytes,
   integrity_failed = integrity_failed,
+  merge_failed = merge_failed,
   override = override
 )
 

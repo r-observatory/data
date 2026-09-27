@@ -224,6 +224,9 @@ gate_freshness <- function(last_checked, last_changed, released_at,
 #' @param integrity_failed basenames the workflow removed for failing
 #'   PRAGMA integrity_check. Without this list a corrupt source and a source
 #'   that never published are indistinguishable.
+#' @param merge_failed named character, source -> what failed, for the sources
+#'   merge.R could not copy whole. Without it a source whose tables failed to
+#'   copy reads as present and passes.
 #' @param override TRUE to publish despite a fatal verdict.
 #' @return list(rows, fatal_problems, problems, publish_allowed, override_used,
 #'   run_failed)
@@ -240,6 +243,7 @@ evaluate_freshness_gate <- function(meta,
                                     stale_multiplier = gate_stale_multiplier(),
                                     min_stale_window_h = gate_min_stale_window_h(),
                                     integrity_failed = character(),
+                                    merge_failed = character(),
                                     override = FALSE) {
 
   meta_for <- function(pipeline) {
@@ -288,6 +292,7 @@ evaluate_freshness_gate <- function(meta,
 
     present <- src %in% present_dbs
     corrupt <- src %in% integrity_failed
+    merge_err <- if (src %in% names(merge_failed)) merge_failed[[src]] else NA_character_
 
     m <- meta_for(pipeline)
     if (is.null(cfg)) {
@@ -327,14 +332,17 @@ evaluate_freshness_gate <- function(meta,
       if (corrupt) "corrupt"
       else if (!present) "missing"
       else if (length(short)) "short rows"
+      else if (!is.na(merge_err)) "merge error"
       else if (identical(fresh$status, "stale")) "stale"
       else if (identical(fresh$status, "slow")) "slow"
       else if (identical(fresh$status, "unknown")) "unknown"
       else "ok"
 
     # "slow" and "unknown" are reported and never fail. Both are the shapes a
-    # transient hiccup takes, and this gate prefers a false negative.
-    fails <- verdict %in% c("corrupt", "missing", "short rows", "stale")
+    # transient hiccup takes, and this gate prefers a false negative. A merge
+    # error fails the run but is never fatal: what it lost that the site cannot
+    # do without shows up as short rows instead.
+    fails <- verdict %in% c("corrupt", "missing", "short rows", "merge error", "stale")
 
     rows[[length(rows) + 1L]] <- data.frame(
       source = src,
@@ -348,7 +356,8 @@ evaluate_freshness_gate <- function(meta,
       verdict = verdict,
       fatal = is_fatal,
       fails = fails,
-      detail = if (length(short)) paste(short, collapse = "; ") else "",
+      detail = if (length(short)) paste(short, collapse = "; ")
+               else if (!is.na(merge_err)) merge_err else "",
       stringsAsFactors = FALSE
     )
   }
@@ -371,6 +380,8 @@ evaluate_freshness_gate <- function(meta,
       "corrupt" = sprintf("%s failed PRAGMA integrity_check and was removed before the merge", r$source),
       "missing" = sprintf("%s was not present in sources/ (never downloaded, or its release is gone)", r$source),
       "short rows" = sprintf("%s merged but %s", r$source, r$detail),
+      "merge error" = sprintf("%s did not merge whole, so observatory.db is without what failed: %s",
+                              r$source, r$detail),
       "stale" = sprintf("%s (%s) was last checked %s, %.1f hours ago, past the %.0f hour limit the gate applies (declared window %.0f hours)",
                         r$source, r$pipeline, r$last_checked, r$age_hours,
                         r$fail_after_hours, r$max_age_hours),
