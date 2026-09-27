@@ -120,23 +120,106 @@ source_tables <- list(
   "cran-task-views.db"           = c("cran_task_views", "cran_task_view_events", "cran_task_view_membership")
 )
 
+#' <table>__<index>, for an index whose own name is taken in the output. Cut to
+#' 64 characters, the most MySQL allows, since the viewer mirrors index names.
+qualified_index_name <- function(tbl, idx) {
+  substr(paste0(tbl, "__", idx), 1L, 64L)
+}
+
+#' What holds a name in the output. Tables, indexes and views share one
+#' namespace, matched without regard to case.
+schema_holder <- function(con, name) {
+  DBI::dbGetQuery(con,
+    "SELECT type, tbl_name FROM main.sqlite_master WHERE lower(name) = lower(?)",
+    params = list(name))
+}
+
+#' A source's CREATE INDEX under a new name, UNIQUE and everything from ON
+#' onwards kept as written. NA when the statement cannot be read.
+index_sql_as <- function(sql, new_name) {
+  pat <- paste0("^\\s*CREATE\\s+(UNIQUE\\s+)?INDEX\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?",
+                "(?:\"(?:[^\"]|\"\")+\"|\\[[^\\]]+\\]|`(?:[^`]|``)+`|[^\\s(]+)\\s*ON\\s")
+  if (!grepl(pat, sql, perl = TRUE, ignore.case = TRUE)) return(NA_character_)
+  quoted <- paste0('"', gsub('"', '""', new_name, fixed = TRUE), '"')
+  sub(pat, paste0("CREATE \\1INDEX ", gsub("\\", "\\\\", quoted, fixed = TRUE), " ON "),
+      sql, perl = TRUE, ignore.case = TRUE)
+}
+
+#' Create one source index in the output. IF NOT EXISTS quietly skipped a name
+#' another table's index already had, which left the Bioconductor code-metrics
+#' tables without theirs, so such a name now goes on as <table>__<index>.
+#'
+#' @return one-row data.frame: index, table, created_as, outcome ("created",
+#'   "renamed", "present" or "failed") and note.
+replay_index <- function(con, idx, tbl, sql) {
+  row <- function(created_as, outcome, note = "") {
+    data.frame(index = idx, table = tbl, created_as = created_as,
+               outcome = outcome, note = note, stringsAsFactors = FALSE)
+  }
+  on_this_table <- function(holder) {
+    nrow(holder) > 0 && holder$type[1] == "index" &&
+      tolower(holder$tbl_name[1]) == tolower(tbl)
+  }
+  run <- function(stmt, created_as, outcome, note = "") {
+    tryCatch({
+      DBI::dbExecute(con, stmt)
+      row(created_as, outcome, note)
+    }, error = function(e) row(NA_character_, "failed", conditionMessage(e)))
+  }
+
+  holder <- schema_holder(con, idx)
+  if (nrow(holder) == 0) return(run(sql, idx, "created"))
+  if (on_this_table(holder)) {
+    return(row(idx, "present", sprintf("%s already has an index by this name", tbl)))
+  }
+
+  held_by <- function(h) {
+    switch(h$type[1],
+           index = sprintf("an index on %s", h$tbl_name[1]),
+           trigger = sprintf("a trigger on %s", h$tbl_name[1]),
+           sprintf("%s %s", h$type[1], h$tbl_name[1]))
+  }
+  taken_by <- held_by(holder)
+  new_name <- qualified_index_name(tbl, idx)
+  again <- schema_holder(con, new_name)
+  if (on_this_table(again)) {
+    return(row(new_name, "present", sprintf("%s already has %s", tbl, new_name)))
+  }
+  if (nrow(again) > 0) {
+    return(row(NA_character_, "failed", sprintf(
+      "the name is taken by %s and %s by %s", taken_by, new_name, held_by(again))))
+  }
+  new_sql <- index_sql_as(sql, new_name)
+  if (is.na(new_sql)) {
+    return(row(NA_character_, "failed", sprintf(
+      "the name is taken by %s and its CREATE INDEX could not be renamed", taken_by)))
+  }
+  run(new_sql, new_name, "renamed", sprintf("the name is taken by %s", taken_by))
+}
+
 #' Copy one source DB into the output connection: every allowlisted table the
 #' source actually has, created from its own CREATE TABLE so keys and
-#' WITHOUT ROWID survive, then every index the source declares.
+#' WITHOUT ROWID survive, then every index the source declares on a table that
+#' copied.
 #'
 #' A listed table the source does not have is not an error. The allowlist
 #' filters the source's own table list, so a table the producer has not
 #' published yet simply copies nothing, and adding it here can land before the
-#' producer does. An index on a table that was not copied fails to create and is
-#' skipped with a note.
+#' producer does. An index on a table that did not copy is skipped with a note.
 #'
-#' When the copy fails, whatever it has not committed is rolled back and src is
-#' detached before the error propagates, so the next source can still attach.
+#' Each table copies in its own transaction, so a table that fails is rolled
+#' back, table and all, and named in `failed` without costing the others.
+#'
+#' When something outside a table's copy fails, whatever it has not committed is
+#' rolled back and src is detached before the error propagates, so the next
+#' source can still attach.
 #'
 #' @param con     output connection.
 #' @param src_path path to the source SQLite file.
 #' @param allow   NULL for every table, or the allowlisted table names.
-#' @return named list of rows copied per table, in source order.
+#' @return list: tables (rows copied per table, in source order), failed (named
+#'   character, table -> error) and indexes (one row per source index, see
+#'   replay_index, with "skipped" for a table that did not copy).
 merge_source_db <- function(con, src_path, allow) {
   DBI::dbExecute(con, "ATTACH DATABASE ? AS src", params = list(src_path))
 
@@ -165,78 +248,103 @@ merge_source_db <- function(con, src_path, allow) {
   }
 
   table_stats <- list()
+  failed <- character()
 
-  if (nrow(tables) > 0) {
-    DBI::dbExecute(con, "BEGIN TRANSACTION")
+  for (i in seq_len(nrow(tables))) {
+    tbl_name <- tables$name[i]
+    tbl_sql  <- tables$sql[i]
 
-    for (i in seq_len(nrow(tables))) {
-      tbl_name <- tables$name[i]
-      tbl_sql  <- tables$sql[i]
+    cat("  Table:", tbl_name)
 
-      cat("  Table:", tbl_name)
+    # Create table if not exists, from the source's own CREATE TABLE
+    create_sql <- sub(
+      "^CREATE TABLE ",
+      "CREATE TABLE IF NOT EXISTS ",
+      tbl_sql,
+      ignore.case = TRUE
+    )
 
-      # Create table if not exists, from the source's own CREATE TABLE
-      create_sql <- sub(
-        "^CREATE TABLE ",
-        "CREATE TABLE IF NOT EXISTS ",
-        tbl_sql,
-        ignore.case = TRUE
-      )
+    copied <- tryCatch({
+      DBI::dbExecute(con, "BEGIN TRANSACTION")
       DBI::dbExecute(con, create_sql)
 
       # Get column list from source table for INSERT
       col_info <- DBI::dbGetQuery(con, sprintf('PRAGMA src.table_info("%s")', tbl_name))
-      cols <- col_info$name
-      cols_str <- paste(sprintf('"%s"', cols), collapse = ", ")
+      cols_str <- paste(sprintf('"%s"', col_info$name), collapse = ", ")
 
-      # Copy data
-      insert_sql <- sprintf(
+      n_rows <- DBI::dbExecute(con, sprintf(
         'INSERT OR REPLACE INTO "%s" (%s) SELECT %s FROM src."%s"',
         tbl_name, cols_str, cols_str, tbl_name
-      )
-      n_rows <- DBI::dbExecute(con, insert_sql)
-      cat(" ->", n_rows, "rows\n")
+      ))
+      DBI::dbExecute(con, "COMMIT")
+      n_rows
+    }, error = function(e) {
+      tryCatch(DBI::dbExecute(con, "ROLLBACK"), error = function(e2) NULL)
+      structure(conditionMessage(e), class = "copy_failed")
+    })
 
-      table_stats[[tbl_name]] <- n_rows
+    if (inherits(copied, "copy_failed")) {
+      failed[[tbl_name]] <- unclass(copied)
+      cat(" -> FAILED, not copied:", unclass(copied), "\n")
+    } else {
+      table_stats[[tbl_name]] <- copied
+      cat(" ->", copied, "rows\n")
     }
-
-    DBI::dbExecute(con, "COMMIT")
   }
 
-  # Copy indexes
   indexes <- DBI::dbGetQuery(con,
-    "SELECT sql FROM src.sqlite_master
+    "SELECT name, tbl_name, sql FROM src.sqlite_master
      WHERE type = 'index' AND sql IS NOT NULL"
   )
-  if (nrow(indexes) > 0) {
-    for (j in seq_len(nrow(indexes))) {
-      idx_sql <- sub(
-        "^CREATE INDEX ",
-        "CREATE INDEX IF NOT EXISTS ",
-        indexes$sql[j],
-        ignore.case = TRUE
-      )
-      # Also handle UNIQUE indexes
-      idx_sql <- sub(
-        "^CREATE UNIQUE INDEX ",
-        "CREATE UNIQUE INDEX IF NOT EXISTS ",
-        idx_sql,
-        ignore.case = TRUE
-      )
-      tryCatch(
-        DBI::dbExecute(con, idx_sql),
-        error = function(e) {
-          cat("  Warning: index creation skipped:", conditionMessage(e), "\n")
-        }
-      )
+  index_rows <- list(data.frame(index = character(), table = character(),
+                                created_as = character(), outcome = character(),
+                                note = character(), stringsAsFactors = FALSE))
+  for (j in seq_len(nrow(indexes))) {
+    idx <- indexes$name[j]
+    tbl <- indexes$tbl_name[j]
+    res <- if (tbl %in% names(table_stats)) {
+      replay_index(con, idx, tbl, indexes$sql[j])
+    } else {
+      why <- if (tbl %in% names(failed)) "its table failed to copy" else "its table is not copied"
+      data.frame(index = idx, table = tbl, created_as = NA_character_,
+                 outcome = "skipped", note = why, stringsAsFactors = FALSE)
     }
-    cat("  Copied", nrow(indexes), "indexes\n")
+    if (res$outcome == "renamed") {
+      cat(sprintf("  Index %s: %s, so created on %s as %s\n", idx, res$note, tbl, res$created_as))
+    } else if (res$outcome != "created") {
+      cat(sprintf("  Index %s on %s %s: %s\n", idx, tbl, res$outcome, res$note))
+    }
+    index_rows[[length(index_rows) + 1L]] <- res
+  }
+  index_rows <- do.call(rbind, index_rows)
+  if (nrow(index_rows) > 0) {
+    counts <- table(factor(index_rows$outcome,
+                           levels = c("created", "renamed", "present", "skipped", "failed")))
+    counts <- counts[counts > 0]
+    cat("  Indexes: ", paste(counts, names(counts), collapse = ", "), "\n", sep = "")
   }
 
   DBI::dbExecute(con, "DETACH DATABASE src")
   done <- TRUE
 
-  table_stats
+  list(tables = table_stats, failed = failed, indexes = index_rows)
+}
+
+#' What went wrong with one source's copy, as one line, or "" when nothing did.
+source_failure_detail <- function(stats) {
+  if (is.null(stats) || !identical(stats$status, "error")) return("")
+  parts <- character()
+  failed <- stats$failed_tables %||% character()
+  if (length(failed)) {
+    parts <- c(parts, sprintf("table %s: %s", names(failed), failed))
+  }
+  idx <- stats$indexes
+  if (!is.null(idx) && nrow(idx)) {
+    bad <- idx[idx$outcome == "failed", , drop = FALSE]
+    if (nrow(bad)) parts <- c(parts, sprintf("index %s on %s: %s", bad$index, bad$table, bad$note))
+  }
+  if (!length(parts)) parts <- sprintf("nothing merged: %s", stats$reason %||% "unknown error")
+  gsub("[\t\r\n]+", " ", paste(parts, collapse = "; "))
 }
 
 #' Merge every source DB in order into the output connection. A source that is
@@ -247,8 +355,10 @@ merge_source_db <- function(con, src_path, allow) {
 #' @param sources_dir directory the source DBs were downloaded into.
 #' @param dbs         source DB file names, in merge order.
 #' @param tables      per-source allowlists, shaped like source_tables.
-#' @return named list keyed by source file: status "merged" (with file_size and
-#'   rows per table), "skipped" or "error" (with a reason).
+#' @return named list keyed by source file: status "merged", "skipped" or
+#'   "error". A source that copied carries file_size, tables (rows per table),
+#'   failed_tables and indexes, and is "error" when any table or index failed.
+#'   One that failed outright carries only the reason.
 merge_sources <- function(con, sources_dir, dbs = source_dbs, tables = source_tables) {
   merge_stats <- list()
 
@@ -269,24 +379,85 @@ merge_sources <- function(con, sources_dir, dbs = source_dbs, tables = source_ta
     cat("  File size:", format(file_size, big.mark = ","), "bytes\n")
 
     merge_stats[[db_file]] <- tryCatch({
+      res <- merge_source_db(con, src_path, tables_to_merge_from(db_file, tables))
+      whole <- !length(res$failed) && !any(res$indexes$outcome == "failed")
       list(
-        status = "merged",
+        status = if (whole) "merged" else "error",
         file_size = file_size,
-        tables = merge_source_db(con, src_path, tables_to_merge_from(db_file, tables))
+        tables = res$tables,
+        failed_tables = res$failed,
+        indexes = res$indexes
       )
     }, error = function(e) {
       # merge_source_db has already rolled back and detached.
-      warning("Error processing ", db_file, ": ", conditionMessage(e), call. = FALSE)
       list(
         status = "error",
         reason = conditionMessage(e)
       )
     })
+    if (identical(merge_stats[[db_file]]$status, "error")) {
+      warning("Error processing ", db_file, ": ",
+              source_failure_detail(merge_stats[[db_file]]), call. = FALSE)
+    }
 
     cat("\n")
   }
 
   merge_stats
+}
+
+#' Every source that did not merge whole, as source -> what failed. The gate
+#' reads this, so a source that published without some of its tables fails the
+#' run rather than passing as present.
+merge_failures <- function(merge_stats) {
+  out <- character()
+  for (db_file in names(merge_stats)) {
+    detail <- source_failure_detail(merge_stats[[db_file]])
+    if (nzchar(detail)) out[[db_file]] <- detail
+  }
+  out
+}
+
+#' merge.R and check-freshness.R run as separate steps, so the failures travel
+#' as a file beside .integrity-failed: one "source<TAB>detail" line each. No
+#' failures means no file, and a stale one is removed.
+write_merge_failures <- function(path, failures) {
+  if (file.exists(path)) unlink(path)
+  if (length(failures)) writeLines(paste(names(failures), failures, sep = "\t"), path)
+  invisible(path)
+}
+
+read_merge_failures <- function(path) {
+  if (!file.exists(path)) return(character())
+  lines <- readLines(path, warn = FALSE)
+  lines <- lines[nzchar(trimws(lines))]
+  if (!length(lines)) return(character())
+  src <- sub("\t.*$", "", lines)
+  detail <- ifelse(grepl("\t", lines, fixed = TRUE), sub("^[^\t]*\t", "", lines), "")
+  stats::setNames(detail, src)
+}
+
+#' One source's row in the release notes table.
+source_note_row <- function(db_file, stats) {
+  if (is.null(stats)) return(sprintf("| %s | unknown | - | - | - |", db_file))
+  if (identical(stats$status, "skipped")) {
+    return(sprintf("| %s | skipped (%s) | - | - | - |", db_file, stats$reason))
+  }
+  if (is.null(stats$tables)) return(sprintf("| %s | error | - | - | - |", db_file))
+  status <- stats$status
+  failed <- names(stats$failed_tables %||% character())
+  if (length(failed)) status <- sprintf("%s, failed: %s", status, paste(failed, collapse = ", "))
+  bad_idx <- if (!is.null(stats$indexes)) stats$indexes$index[stats$indexes$outcome == "failed"] else character()
+  if (length(bad_idx)) {
+    status <- sprintf("%s, index failed: %s", status, paste(bad_idx, collapse = ", "))
+  }
+  tbl_names <- names(stats$tables)
+  sprintf("| %s | %s | %s | %s (%d) | %s |",
+          db_file, status,
+          format(stats$file_size, big.mark = ","),
+          paste(tbl_names, collapse = ", "),
+          length(tbl_names),
+          format(sum(unlist(stats$tables)), big.mark = ","))
 }
 
 #' Post-merge safety check. When a source DB was present, verify its expected

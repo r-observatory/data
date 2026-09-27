@@ -60,6 +60,15 @@ dbExecute(con, "PRAGMA synchronous=NORMAL")
 # lookup included, against real SQLite files.
 merge_stats <- merge_sources(con, sources_dir)
 
+# A source that published without some of its tables must still fail the run,
+# so what failed goes to the gate, which runs as a later step.
+merge_failed <- merge_failures(merge_stats)
+write_merge_failures(file.path(sources_dir, ".merge-failed"), merge_failed)
+if (length(merge_failed)) {
+  cat(sprintf("%d source(s) did not merge whole:\n", length(merge_failed)))
+  cat(sprintf("  %s: %s\n", names(merge_failed), merge_failed), sep = "")
+}
+
 merged_count <- sum(vapply(merge_stats, function(s) {
   !is.null(s) && identical(s$status, "merged")
 }, logical(1)))
@@ -263,34 +272,24 @@ notes <- c(notes, "| Source | Status | Size | Tables | Total Rows |")
 notes <- c(notes, "|--------|--------|------|--------|------------|")
 
 for (db_file in source_dbs) {
-  stats <- merge_stats[[db_file]]
-  if (is.null(stats)) {
-    notes <- c(notes, sprintf("| %s | unknown | — | — | — |", db_file))
-    next
-  }
+  notes <- c(notes, source_note_row(db_file, merge_stats[[db_file]]))
+}
 
-  if (stats$status == "skipped") {
-    notes <- c(notes, sprintf(
-      "| %s | skipped (%s) | — | — | — |",
-      db_file, stats$reason
-    ))
-  } else if (stats$status == "error") {
-    notes <- c(notes, sprintf(
-      "| %s | error | — | — | — |",
-      db_file
-    ))
-  } else {
-    tbl_names <- names(stats$tables)
-    total_rows <- sum(unlist(stats$tables))
-    notes <- c(notes, sprintf(
-      "| %s | merged | %s | %s (%d) | %s |",
-      db_file,
-      format(stats$file_size, big.mark = ","),
-      paste(tbl_names, collapse = ", "),
-      length(tbl_names),
-      format(total_rows, big.mark = ",")
-    ))
-  }
+if (length(merge_failed)) {
+  notes <- c(notes, "", "## Did not merge whole\n")
+  notes <- c(notes, sprintf("- **%s**: %s", names(merge_failed), merge_failed))
+}
+
+# Index names the output already held elsewhere, so they went on under their
+# table's name.
+renamed <- do.call(rbind, lapply(merge_stats, function(s) {
+  if (is.null(s$indexes)) return(NULL)
+  s$indexes[s$indexes$outcome == "renamed", , drop = FALSE]
+}))
+if (!is.null(renamed) && nrow(renamed)) {
+  notes <- c(notes, "", "## Renamed indexes\n")
+  notes <- c(notes, sprintf("- `%s` on %s as `%s` (%s)", renamed$index, renamed$table,
+                            renamed$created_as, renamed$note))
 }
 
 notes <- c(notes, "")
