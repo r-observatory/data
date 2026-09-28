@@ -330,11 +330,101 @@ jobs:
               fi
             done
           }
+          # The name to fetch $3 by from $1@$2: $3.zst when listed, else $3, with
+          # an uploaded copy ahead of one still uploading. Unreadable is $3.
+          dated_asset() {  # $1=repo  $2=tag  $3=target-filename
+            local rows
+            if ! rows=$(gh release view "$2" --repo "r-observatory/$1" --json assets \
+                          --jq ".assets[] | select(.name == \"$3.zst\" or .name == \"$3\") | \"\(.name) \(.state)\""); then
+              echo "  Warning: could not list the assets of $1@$2; trying $3" >&2
+              rows=""
+            fi
+            printf '%s\n' "$rows" | awk -v z="$3.zst" -v p="$3" '
+              $1 == z && $2 == "uploaded" { r[1] = z }
+              $1 == p && $2 == "uploaded" { r[2] = p }
+              $1 == z { r[3] = z }
+              END { r[4] = p; for (i = 1; i <= 4; i++) if (i in r) { print r[i]; exit } }'
+          }
+          sha256_of() {  # $1=file, as bare hex
+            { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d' ' -f1
+          }
+          # Expands the $4.zst in $5 to $5/$4, whole by its release size and zstd
+          # checksum. $2-manifest.json binds it only when it names this very .zst,
+          # since a harvest or an unfinished publish leaves an earlier one's.
+          # Returns 1 on a bad .zst, an unreadable manifest, or one naming it that disagrees.
+          expand_dated() {  # $1=repo  $2=series  $3=tag  $4=target-filename  $5=dir
+            local zst="$5/$4.zst" out="$5/$4" man="$5/manifest" fields tool listed
+            local aname asha abytes bytes sha named="" actual sum
+            verify_size "r-observatory/$1" "$3" "$4.zst" "$zst"
+            for tool in zstd jq; do
+              if ! command -v "$tool" >/dev/null; then
+                echo "::error::$tool not found on the runner, needed to read $4.zst"
+                exit 1
+              fi
+            done
+            if ! zstd -dq -f "$zst" -o "$out"; then
+              echo "  Warning: $4.zst from $1@$3 did not decompress"
+              rm -f "$out"
+              return 1
+            fi
+            mkdir -p "$man"
+            if ! gh release download "$3" --repo "r-observatory/$1" --pattern "$2-manifest.json" --dir "$man"; then
+              if listed=$(gh release view "$3" --repo "r-observatory/$1" --json assets \
+                            --jq ".assets[] | select(.name == \"$2-manifest.json\") | .name") &&
+                 [ -z "$listed" ]; then
+                echo "  Warning: $1@$3 has no $2-manifest.json; relying on the zstd checksum alone"
+                rm -f "$zst"
+                return 0
+              fi
+              echo "  Warning: could not read $2-manifest.json from $1@$3"
+              return 1
+            fi
+            if ! fields=$(jq -r --arg f "$4" 'select(.db_filename == $f)
+                            | [.asset_filename, .asset_sha256, .asset_bytes, .db_bytes, .db_sha256]
+                            | map(if . == null then "" else tostring end) | join("|")' \
+                            "$man/$2-manifest.json"); then
+              echo "  Warning: could not read $2-manifest.json from $1@$3 as JSON"
+              return 1
+            fi
+            IFS='|' read -r aname asha abytes bytes sha <<< "$fields"
+            asha=$(printf '%s' "${asha#sha256:}" | tr 'A-F' 'a-f')
+            sha=$(printf '%s' "${sha#sha256:}" | tr 'A-F' 'a-f')
+            if [ -z "$bytes$sha" ]; then
+              echo "  Warning: $2-manifest.json on $1@$3 does not describe $4; relying on the zstd checksum alone"
+              rm -f "$zst"
+              return 0
+            fi
+            if [ "$aname" = "$4.zst" ]; then
+              if [ -n "$asha" ]; then
+                if [ "$(sha256_of "$zst")" = "$asha" ]; then named=yes; fi
+              elif [ -n "$abytes" ] && [ "$(stat --format=%s "$zst")" = "$abytes" ]; then
+                named=yes
+              fi
+            fi
+            rm -f "$zst"
+            if [ -z "$named" ]; then
+              echo "  $2-manifest.json on $1@$3 was not published with this $4.zst, as after a harvest or an unfinished publish; relying on its size and the zstd checksum"
+              return 0
+            fi
+            actual=$(stat --format=%s "$out")
+            if [ -n "$bytes" ] && [ "$bytes" != "$actual" ]; then
+              echo "  Warning: $4.zst from $1@$3 expands to $actual bytes, but the $2-manifest.json published with it says $bytes"
+              return 1
+            fi
+            if [ -n "$sha" ]; then
+              sum=$(sha256_of "$out")
+              if [ "$sum" != "$sha" ]; then
+                echo "  Warning: $4.zst from $1@$3 expands to sha256 $sum, but the $2-manifest.json published with it says $sha"
+                return 1
+              fi
+            fi
+            echo "  manifest OK: $4 = $actual bytes${sha:+, sha256 $sha} (matches the $2-manifest.json published with $4.zst)"
+          }
           dl_dated() {    # $1=repo  $2=series  $3=target-filename
             # Metrics repos now publish ONE dated metrics-* release carrying both the
             # code and data DBs; prefer it and fall back to the legacy per-series
             # $2-* tag while the metrics- scheme rolls out.
-            local tag="" listed="" tmpdir attempt got="" state waited=0
+            local tag="" listed="" tmpdir attempt got="" state waited=0 pick="" bad=""
             # A listing that fails is retried, and its waits count against the
             # same per-database limit as the download's below. One that never
             # succeeds says so, since "no release" would send whoever reads the
@@ -390,16 +480,23 @@ jobs:
             # release, because until then readiness sees nothing new to merge.
             tmpdir=$(mktemp -d)
             for attempt in 1 2 3; do
+              # Chosen again on every attempt, so a release that changes form
+              # while this runs is still read.
+              pick=$(dated_asset "$1" "$tag" "$3")
+              bad=""
               # gh's own error stays in the log above each warning, since a
               # clobber gap ("no assets match the file pattern"), a 5xx and a
               # cut stream are worth telling apart.
-              if gh release download "$tag" --repo "r-observatory/$1" --pattern "$3" --dir "$tmpdir"; then
-                if [ -s "$tmpdir/$3" ] || [ "$attempt" -eq 3 ]; then
+              if gh release download "$tag" --repo "r-observatory/$1" --pattern "$pick" --dir "$tmpdir"; then
+                if [ ! -s "$tmpdir/$pick" ] && [ "$attempt" -lt 3 ]; then
+                  echo "  Warning: $pick from $1@$tag came back as an empty file (attempt $attempt/3)"
+                elif [ "$pick" = "$3" ] || expand_dated "$1" "$2" "$tag" "$3" "$tmpdir"; then
                   got=yes; break
+                else
+                  bad=yes
                 fi
-                echo "  Warning: $3 from $1@$tag came back as an empty file (attempt $attempt/3)"
               else
-                echo "  Warning: could not download $3 from $1@$tag (attempt $attempt/3)"
+                echo "  Warning: could not download $pick from $1@$tag (attempt $attempt/3)"
               fi
               if [ "$attempt" -eq 3 ]; then
                 break
@@ -407,16 +504,19 @@ jobs:
               # gh refuses to download over a file it already wrote, so a partial
               # or empty one would make every later attempt fail.
               find "$tmpdir" -mindepth 1 -delete 2>/dev/null || true
+              # Either form being uploaded is enough, since the next attempt
+              # chooses again.
               while :; do
                 sleep 15
                 waited=$((waited + 15))
                 if ! state=$(gh release view "$tag" --repo "r-observatory/$1" --json assets \
-                               --jq ".assets[] | select(.name == \"$3\") | .state"); then
+                               --jq ".assets[] | select(.name == \"$3.zst\" or .name == \"$3\") | .state"); then
                   state="unreadable"
                 fi
-                if [ "$state" = uploaded ] || [ "$waited" -ge 180 ]; then
+                if printf '%s\n' "$state" | grep -qx uploaded || [ "$waited" -ge 180 ]; then
                   break
                 fi
+                state=${state//$'\n'/, }
                 echo "  $3 on $1@$tag is ${state:-not listed}; waiting for its upload (${waited}s so far)..."
               done
               echo "  retrying $3 from $1@$tag..."
@@ -424,8 +524,12 @@ jobs:
 
             if [ -n "$got" ]; then
               mv "$tmpdir/$3" "sources/$3"
-              echo "  -> sources/$3 from $tag ($(stat --format=%s "sources/$3") bytes)"
-              verify_size "r-observatory/$1" "$tag" "$3" "sources/$3"
+              if [ "$pick" = "$3" ]; then
+                echo "  -> sources/$3 from $tag ($(stat --format=%s "sources/$3") bytes)"
+                verify_size "r-observatory/$1" "$tag" "$3" "sources/$3"
+              else
+                echo "  -> sources/$3 from $tag ($(stat --format=%s "sources/$3") bytes, from $pick)"
+              fi
               # An empty file still here got past verify_size because the
               # release declares zero bytes or its size could not be read. It
               # passes PRAGMA integrity_check and counts as present to the
@@ -435,6 +539,11 @@ jobs:
                 echo "  Warning: $3 from $1@$tag is empty; leaving it out of sources/"
                 rm -f "sources/$3"
               fi
+            elif [ -n "$bad" ]; then
+              # Like a torn download: publishing nothing lets the next tick retry.
+              rm -rf "$tmpdir"
+              echo "::error::$pick from $1@$tag failed the checks above on all 3 attempts. Aborting merge."
+              exit 1
             else
               echo "  Warning: could not download $3 from $1@$tag after 3 attempts"
             fi
