@@ -345,11 +345,16 @@ jobs:
               $1 == z { r[3] = z }
               END { r[4] = p; for (i = 1; i <= 4; i++) if (i in r) { print r[i]; exit } }'
           }
-          # Expands the $4.zst in $5 to $5/$4 and holds it against $2-manifest.json.
-          # A torn download ends the step in verify_size; any other bad file, or a
-          # listed manifest that cannot be read, returns 1.
+          sha256_of() {  # $1=file, as bare hex
+            { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d' ' -f1
+          }
+          # Expands the $4.zst in $5 to $5/$4, whole by its release size and zstd
+          # checksum. $2-manifest.json binds it only when it names this very .zst,
+          # since a harvest or an unfinished publish leaves an earlier one's.
+          # Returns 1 on a bad .zst, an unreadable manifest, or one naming it that disagrees.
           expand_dated() {  # $1=repo  $2=series  $3=tag  $4=target-filename  $5=dir
-            local zst="$5/$4.zst" out="$5/$4" man="$5/manifest" fields bytes sha actual sum tool listed
+            local zst="$5/$4.zst" out="$5/$4" man="$5/manifest" fields tool listed
+            local aname asha abytes bytes sha named="" actual sum
             verify_size "r-observatory/$1" "$3" "$4.zst" "$zst"
             for tool in zstd jq; do
               if ! command -v "$tool" >/dev/null; then
@@ -362,42 +367,58 @@ jobs:
               rm -f "$out"
               return 1
             fi
-            rm -f "$zst"
-            actual=$(stat --format=%s "$out")
             mkdir -p "$man"
             if ! gh release download "$3" --repo "r-observatory/$1" --pattern "$2-manifest.json" --dir "$man"; then
               if listed=$(gh release view "$3" --repo "r-observatory/$1" --json assets \
                             --jq ".assets[] | select(.name == \"$2-manifest.json\") | .name") &&
                  [ -z "$listed" ]; then
                 echo "  Warning: $1@$3 has no $2-manifest.json; relying on the zstd checksum alone"
+                rm -f "$zst"
                 return 0
               fi
               echo "  Warning: could not read $2-manifest.json from $1@$3"
               return 1
             fi
-            if ! fields=$(jq -r --arg f "$4" 'select(.db_filename == $f) | "\(.db_bytes // "")|\(.db_sha256 // "")"' \
+            if ! fields=$(jq -r --arg f "$4" 'select(.db_filename == $f)
+                            | [.asset_filename, .asset_sha256, .asset_bytes, .db_bytes, .db_sha256]
+                            | map(if . == null then "" else tostring end) | join("|")' \
                             "$man/$2-manifest.json"); then
               echo "  Warning: could not read $2-manifest.json from $1@$3 as JSON"
               return 1
             fi
-            if [ -z "$fields" ] || [ "$fields" = "|" ]; then
+            IFS='|' read -r aname asha abytes bytes sha <<< "$fields"
+            asha=$(printf '%s' "${asha#sha256:}" | tr 'A-F' 'a-f')
+            sha=$(printf '%s' "${sha#sha256:}" | tr 'A-F' 'a-f')
+            if [ -z "$bytes$sha" ]; then
               echo "  Warning: $2-manifest.json on $1@$3 does not describe $4; relying on the zstd checksum alone"
+              rm -f "$zst"
               return 0
             fi
-            IFS='|' read -r bytes sha <<< "$fields"
-            sha=$(printf '%s' "${sha#sha256:}" | tr 'A-F' 'a-f')
+            if [ "$aname" = "$4.zst" ]; then
+              if [ -n "$asha" ]; then
+                if [ "$(sha256_of "$zst")" = "$asha" ]; then named=yes; fi
+              elif [ -n "$abytes" ] && [ "$(stat --format=%s "$zst")" = "$abytes" ]; then
+                named=yes
+              fi
+            fi
+            rm -f "$zst"
+            if [ -z "$named" ]; then
+              echo "  $2-manifest.json on $1@$3 was not published with this $4.zst, as after a harvest or an unfinished publish; relying on its size and the zstd checksum"
+              return 0
+            fi
+            actual=$(stat --format=%s "$out")
             if [ -n "$bytes" ] && [ "$bytes" != "$actual" ]; then
-              echo "  Warning: $4.zst from $1@$3 expands to $actual bytes, but $2-manifest.json says $bytes"
+              echo "  Warning: $4.zst from $1@$3 expands to $actual bytes, but the $2-manifest.json published with it says $bytes"
               return 1
             fi
             if [ -n "$sha" ]; then
-              sum=$({ sha256sum "$out" 2>/dev/null || shasum -a 256 "$out"; } | cut -d' ' -f1)
+              sum=$(sha256_of "$out")
               if [ "$sum" != "$sha" ]; then
-                echo "  Warning: $4.zst from $1@$3 expands to sha256 $sum, but $2-manifest.json says $sha"
+                echo "  Warning: $4.zst from $1@$3 expands to sha256 $sum, but the $2-manifest.json published with it says $sha"
                 return 1
               fi
             fi
-            echo "  manifest OK: $4 = $actual bytes${sha:+, sha256 $sha} (matches $2-manifest.json)"
+            echo "  manifest OK: $4 = $actual bytes${sha:+, sha256 $sha} (matches the $2-manifest.json published with $4.zst)"
           }
           dl_dated() {    # $1=repo  $2=series  $3=target-filename
             # Metrics repos now publish ONE dated metrics-* release carrying both the
@@ -521,7 +542,7 @@ jobs:
             elif [ -n "$bad" ]; then
               # Like a torn download: publishing nothing lets the next tick retry.
               rm -rf "$tmpdir"
-              echo "::error::$pick from $1@$tag was not whole after 3 attempts. Aborting merge."
+              echo "::error::$pick from $1@$tag failed the checks above on all 3 attempts. Aborting merge."
               exit 1
             else
               echo "  Warning: could not download $3 from $1@$tag after 3 attempts"

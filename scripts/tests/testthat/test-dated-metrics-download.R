@@ -91,6 +91,31 @@ zstd_file <- function(input, output) {
   output
 }
 
+sha256_hex <- function(path) {
+  tools_ns <- asNamespace("tools")
+  if (exists("sha256sum", envir = tools_ns)) {
+    return(unname(get("sha256sum", envir = tools_ns)(path)))
+  }
+  sub(" .*$", "", system2("shasum", c("-a", "256", shQuote(path)), stdout = TRUE))
+}
+
+# The fields the producer stamps into a manifest: the database it describes
+# and the asset it was published with.
+manifest_fields <- function(target, db, asset, asset_name = basename(asset)) {
+  list(db_filename = target, db_bytes = file.size(db), db_sha256 = sha256_hex(db),
+       asset_filename = asset_name, asset_bytes = file.size(asset),
+       asset_sha256 = sha256_hex(asset))
+}
+
+# The manifest of the database a release carried before this one: 4096 bytes
+# shorter, and published with its own .zst.
+earlier_manifest <- function(target, dir) {
+  db <- file.path(dir, paste0("earlier-", target))
+  writeBin(charToRaw(substr(payload, 1, payload_bytes - 4096)), db)
+  zst <- zstd_file(db, paste0(db, ".zst"))
+  manifest_fields(target, db, zst, paste0(target, ".zst"))
+}
+
 # Writes a stand-in `gh` that answers the calls these functions make, then runs
 # each line of `calls` in one shell, the way the workflow step runs all four.
 #
@@ -114,9 +139,10 @@ zstd_file <- function(input, output) {
 # "zst" (<name>.zst) or "both". `zst` is the file published as <name>.zst, by
 # default the payload compressed at level 3. `switch_at` publishes the plain
 # form until that point of the stand-in clock and the .zst from then on.
-# `manifest` holds fields for <series>-manifest.json on top of the true
-# db_filename and db_bytes, NULL for a release with no manifest. Until
-# `manifest_until` the manifest describes an older database instead.
+# `manifest` holds fields for <series>-manifest.json on top of the ones the
+# producer would stamp for this release (NULL drops one), and is NULL for a
+# release with no manifest. Until `manifest_until` the manifest is the one
+# published with an earlier database and its .zst instead.
 # `manifest_plan` does for each successive manifest download what `plan` does
 # for the databases.
 #
@@ -184,7 +210,9 @@ run_dl_dated <- function(releases, plan = character(), listings = character(),
       if (forms %in% c("zst", "both")) add_db(paste0(target, ".zst"), zst_file)
     }
     if (!is.null(manifest)) {
-      fields <- utils::modifyList(list(db_filename = target, db_bytes = payload_bytes),
+      asset <- if (with_zst) zst_file else plain_file
+      asset_name <- if (with_zst) paste0(target, ".zst") else target
+      fields <- utils::modifyList(manifest_fields(target, plain_file, asset, asset_name),
                                   manifest)
       now_file <- file.path(assets, paste0(series, "-manifest.json"))
       jsonlite::write_json(fields, now_file, auto_unbox = TRUE, pretty = TRUE, digits = NA)
@@ -192,7 +220,7 @@ run_dl_dated <- function(releases, plan = character(), listings = character(),
         add(basename(now_file), now_file, "uploaded", 0, never)
       } else {
         old_file <- paste0(now_file, ".old")
-        jsonlite::write_json(list(db_filename = target, db_bytes = payload_bytes - 1L),
+        jsonlite::write_json(earlier_manifest(target, assets),
                              old_file, auto_unbox = TRUE, pretty = TRUE, digits = NA)
         add(basename(now_file), old_file, "uploaded", 0, manifest_until)
         add(basename(now_file), now_file, "uploaded", manifest_until, never)
@@ -321,6 +349,7 @@ esac)---", file.path(bin, "gh"))
     workflow_function(lines, "verify_size"),
     workflow_function(lines, "latest_tag"),
     workflow_function(lines, "dated_asset"),
+    workflow_function(lines, "sha256_of"),
     workflow_function(lines, "expand_dated"),
     workflow_function(lines, "dl_dated"),
     calls,
@@ -597,7 +626,7 @@ test_that("a truncated .zst aborts the merge instead of merging part of it", {
                       plan = rep("short", 3), declared = NULL)
   expect_false(res$finished, info = res$log)
   expect_equal(length(res$downloads), 3L)
-  expect_match(res$log, "cran-code-metrics.db.zst from cran-code-metrics@metrics-2026-09-28 was not whole after 3 attempts",
+  expect_match(res$log, "cran-code-metrics.db.zst from cran-code-metrics@metrics-2026-09-28 failed the checks above on all 3 attempts",
                fixed = TRUE)
   expect_equal(length(res$sources), 0L)
 })
@@ -624,10 +653,11 @@ test_that("a .zst of the right size that fails its checksum is never merged", {
   expect_equal(length(res$sources), 0L)
 })
 
-test_that("a .zst that expands to less than its manifest says is never merged", {
+test_that("a .zst that expands to less than the manifest published with it says is never merged", {
   needs_tools("zstd")
-  # A stream cut between two frames decodes cleanly, so only the manifest's
-  # size can tell that half the database is missing.
+  # The manifest names this very .zst, so it describes the database inside.
+  # A .zst missing its later frames still decodes cleanly, and only that
+  # manifest's size can tell that half the database is gone.
   root <- withr::local_tempdir()
   half <- file.path(root, "half.db")
   writeBin(charToRaw(substr(payload, 1, payload_bytes / 2)), half)
@@ -635,47 +665,109 @@ test_that("a .zst that expands to less than its manifest says is never merged", 
   res <- run_dl_dated(published("metrics-2026-09-28"), forms = "zst", zst = first_frame)
   expect_false(res$finished, info = res$log)
   expect_equal(length(res$downloads), 3L)
-  expect_match(res$log, sprintf("expands to %d bytes, but code-manifest.json says %d",
+  expect_match(res$log, sprintf("expands to %d bytes, but the code-manifest.json published with it says %d",
                                 payload_bytes / 2, payload_bytes), fixed = TRUE)
+  expect_match(res$log, "Aborting merge", fixed = TRUE)
   expect_equal(length(res$sources), 0L)
 })
 
-test_that("a manifest that trails its database is waited for", {
+test_that("a manifest that trails its database does not hold the merge up", {
   needs_tools("zstd")
   # The pipeline replaces each database before the manifests, so a merge can
-  # read the new database next to the old manifest for a few seconds.
+  # read the new .zst next to the manifest published with the earlier one. That
+  # manifest says nothing about this .zst, which its size and zstd's checksum
+  # have already shown to be whole, so it is merged on the first attempt.
   res <- run_dl_dated(published("metrics-2026-09-28"), forms = "zst", manifest_until = 15)
   expect_true(res$finished, info = res$log)
   expect_true(res$target_whole, info = res$log)
-  expect_equal(length(res$downloads), 2L)
-  expect_match(res$log, "manifest OK", fixed = TRUE)
+  expect_equal(length(res$downloads), 1L)
+  expect_equal(sum(res$sleeps), 0)
+  expect_match(res$log, "code-manifest.json on cran-code-metrics@metrics-2026-09-28 was not published with this cran-code-metrics.db.zst",
+               fixed = TRUE)
+  expect_no_match(res$log, "manifest OK", fixed = TRUE)
+})
+
+test_that("a .zst a harvest replaced is merged beside the manifest of the earlier one", {
+  needs_tools("zstd")
+  # A harvest run replaces the database in the day's release and leaves the
+  # manifests alone, and so does a publish that fails between the two swaps.
+  # Every merge until the next full publish reads that pair, so it has to go
+  # ahead. The same goes for a manifest from before the asset was recorded.
+  root <- withr::local_tempdir()
+  earlier <- earlier_manifest("cran-code-metrics.db", root)
+  unnamed <- c(earlier[c("db_filename", "db_bytes", "db_sha256")],
+               list(asset_filename = NULL, asset_bytes = NULL, asset_sha256 = NULL))
+  for (manifest in list(earlier, unnamed)) {
+    res <- run_dl_dated(published("metrics-2026-09-28"), forms = "zst", manifest = manifest)
+    expect_true(res$finished, info = res$log)
+    expect_true(res$target_whole, info = res$log)
+    expect_equal(length(res$downloads), 1L, info = res$log)
+    expect_match(res$log, "was not published with this cran-code-metrics.db.zst", fixed = TRUE)
+    expect_no_match(res$log, "Aborting merge", fixed = TRUE)
+    expect_no_match(res$log, "expands to", fixed = TRUE)
+  }
+})
+
+test_that("a manifest with no asset sha256 names its .zst by name and size", {
+  needs_tools("zstd")
+  root <- withr::local_tempdir()
+  f <- file.path(root, "payload.db")
+  writeBin(charToRaw(payload), f)
+  zst <- zstd_file(f, file.path(root, "payload.db.zst"))
+  shorter <- payload_bytes - 4096
+  named <- list(asset_sha256 = NULL, asset_bytes = file.size(zst), db_bytes = shorter)
+  res <- run_dl_dated(published("metrics-2026-09-28"), forms = "zst", zst = zst,
+                      manifest = named)
+  expect_false(res$finished, info = res$log)
+  expect_match(res$log, sprintf("says %d", shorter), fixed = TRUE)
+  expect_equal(length(res$sources), 0L)
+
+  # Another size, another name, or an asset sha256 that differs, and the
+  # manifest was published with some other file.
+  for (other in list(list(asset_bytes = file.size(zst) + 1),
+                     list(asset_filename = "cran-code-metrics.db"),
+                     list(asset_sha256 = strrep("0", 64)))) {
+    manifest <- utils::modifyList(named, other)
+    res <- run_dl_dated(published("metrics-2026-09-28"), forms = "zst", zst = zst,
+                        manifest = manifest)
+    expect_true(res$finished, info = res$log)
+    expect_true(res$target_whole, info = res$log)
+    expect_match(res$log, "was not published with this", fixed = TRUE)
+  }
 })
 
 test_that("the manifest's sha256 is checked when it carries one", {
   needs_tools("zstd")
-  skip_if(!exists("sha256sum", envir = asNamespace("tools")), "tools::sha256sum needs R 4.5")
   root <- withr::local_tempdir()
   f <- file.path(root, "payload.db")
   writeBin(charToRaw(payload), f)
-  sha <- unname(tools::sha256sum(f))
+  sha <- sha256_hex(f)
+  zst <- zstd_file(f, file.path(root, "payload.db.zst"))
+  zsha <- sha256_hex(zst)
 
-  for (declared_sha in c(sha, toupper(sha), paste0("sha256:", sha))) {
-    res <- run_dl_dated(published("metrics-2026-09-28"), forms = "zst",
-                        manifest = list(db_sha256 = declared_sha))
+  # Either sha256 in any of the spellings a manifest might use still names
+  # this .zst and matches its database.
+  spell <- list(identity, toupper, function(x) paste0("sha256:", x))
+  for (s in spell) {
+    res <- run_dl_dated(published("metrics-2026-09-28"), forms = "zst", zst = zst,
+                        manifest = list(db_sha256 = s(sha), asset_sha256 = s(zsha)))
     expect_true(res$finished, info = res$log)
     expect_true(res$target_whole, info = res$log)
-    expect_match(res$log, paste("sha256", sha), fixed = TRUE)
+    expect_match(res$log, paste("manifest OK: cran-code-metrics.db =", payload_bytes,
+                                "bytes, sha256", sha), fixed = TRUE)
   }
 
-  res <- run_dl_dated(published("metrics-2026-09-28"), forms = "zst",
-                      manifest = list(db_sha256 = strrep("0", 64)))
+  res <- run_dl_dated(published("metrics-2026-09-28"), forms = "zst", zst = zst,
+                      manifest = list(db_sha256 = strrep("0", 64), db_bytes = NULL))
   expect_false(res$finished, info = res$log)
+  expect_match(res$log, paste("expands to sha256", sha), fixed = TRUE)
   expect_equal(length(res$sources), 0L)
 })
 
 test_that("a .zst with no manifest to hold it against is merged on its own checks", {
   needs_tools("zstd")
-  for (manifest in list(NULL, list(db_filename = "something-else.db"))) {
+  for (manifest in list(NULL, list(db_filename = "something-else.db"),
+                        list(db_bytes = NULL, db_sha256 = NULL))) {
     res <- run_dl_dated(published("metrics-2026-09-28"), forms = "zst", manifest = manifest)
     expect_true(res$finished, info = res$log)
     expect_true(res$target_whole, info = res$log)
@@ -743,5 +835,6 @@ test_that("both databases of one release can be read from their .zst in one step
   expect_true(res$finished, info = res$log)
   expect_equal(unname(res$sources[c("cran-code-metrics.db", "cran-data-metrics.db")]),
                rep(payload_bytes, 2))
-  expect_match(res$log, "matches data-manifest.json", fixed = TRUE)
+  expect_match(res$log, "matches the data-manifest.json published with cran-data-metrics.db.zst",
+               fixed = TRUE)
 })
