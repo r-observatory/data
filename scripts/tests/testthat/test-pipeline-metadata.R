@@ -41,6 +41,15 @@ test_that("summary$data_through beats the shard maximum", {
   expect_equal(manifest_data_through(man), "2026-09-29")
 })
 
+test_that("a declared data_through beats summary$data_through", {
+  man <- manifest_json('{"data_through": {"monthly": "2026-08"},
+                         "summary": {"data_through": "2026-09-01"},
+                         "shards": {"a.db": {"date_max": "2026-09-01"}}}')
+  expect_equal(manifest_data_through(man), "2026-08")
+  man <- manifest_json('{"data_through": "2026-09-28", "summary": {"data_through": "2026-09-29"}}')
+  expect_equal(manifest_data_through(man), "2026-09-28")
+})
+
 test_that("a declared data_through of an unexpected shape falls through, never errors", {
   shapes <- c('{}', '[]', '""', 'null', '{"monthly": ["2026-08"]}', '{"monthly": null}',
               '{"monthly": ""}', '{"daily": "2026-09-29"}', '202608', 'true',
@@ -67,6 +76,18 @@ test_that("a declared data_through of an unexpected shape falls through, never e
   # A near-miss key is not read as the declared value.
   man <- manifest_json('{"data_through_note": "2026-01", "shards": {"a.db": {"date_max": "2026-09-30"}}}')
   expect_equal(manifest_data_through(man), "2026-09-30")
+})
+
+test_that("only the exact keys are read at every level", {
+  shards <- '"shards": {"a.db": {"date_max": "2026-09-30"}}'
+  for (near in c('"data_through": {"monthly_note": "2026-01"}',
+                 '"summary": {"data_through_note": "2026-01"}',
+                 '"summary_note": {"data_through": "2026-01"}')) {
+    man <- manifest_json(sprintf('{%s, %s}', near, shards))
+    expect_equal(manifest_data_through(man), "2026-09-30", info = near)
+  }
+  man <- manifest_json('{"shards_note": {"a.db": {"date_max": "2026-01-01"}}}')
+  expect_true(is.na(manifest_data_through(man)))
 })
 
 test_that("the Bioconductor downloads row reports the month its producer declares", {
