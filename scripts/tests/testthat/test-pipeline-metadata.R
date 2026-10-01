@@ -16,6 +16,98 @@ test_that("manifest_data_through falls back to summary$data_through without a sh
   expect_true(is.na(manifest_data_through(NULL)))
 })
 
+# Manifests are read with simplifyVector = FALSE, so each case starts as JSON.
+manifest_json <- function(json) jsonlite::fromJSON(json, simplifyVector = FALSE)
+
+test_that("a declared monthly data_through beats the shard maximum", {
+  # bioconductor-downloads' manifest of 2026-09-30: the month in progress is
+  # stored as 2026-09-01, and the producer declares August as its last whole month.
+  man <- manifest_json('{
+    "data_through": {"monthly": "2026-08"},
+    "shards": {"bioconductor-2026.db": {"date_max": "2026-09-01"},
+               "bioconductor-recent.db": {"date_max": "2026-08-01"}}}')
+  expect_equal(manifest_data_through(man), "2026-08")
+})
+
+test_that("a declared scalar data_through is taken as written", {
+  man <- manifest_json('{"data_through": "2026-09-28",
+                         "shards": {"a.db": {"date_max": "2026-09-30"}}}')
+  expect_equal(manifest_data_through(man), "2026-09-28")
+})
+
+test_that("summary$data_through beats the shard maximum", {
+  man <- manifest_json('{"summary": {"data_through": "2026-09-29"},
+                         "shards": {"a.db": {"date_max": "2026-09-30"}}}')
+  expect_equal(manifest_data_through(man), "2026-09-29")
+})
+
+test_that("a declared data_through beats summary$data_through", {
+  man <- manifest_json('{"data_through": {"monthly": "2026-08"},
+                         "summary": {"data_through": "2026-09-01"},
+                         "shards": {"a.db": {"date_max": "2026-09-01"}}}')
+  expect_equal(manifest_data_through(man), "2026-08")
+  man <- manifest_json('{"data_through": "2026-09-28", "summary": {"data_through": "2026-09-29"}}')
+  expect_equal(manifest_data_through(man), "2026-09-28")
+})
+
+test_that("a declared data_through of an unexpected shape falls through, never errors", {
+  shapes <- c('{}', '[]', '""', 'null', '{"monthly": ["2026-08"]}', '{"monthly": null}',
+              '{"monthly": ""}', '{"daily": "2026-09-29"}', '202608', 'true',
+              '["2026-08", "2026-09"]', '["2026-08"]')
+  for (shape in shapes) {
+    with_summary <- manifest_json(sprintf(
+      '{"data_through": %s, "summary": {"data_through": "2026-09-29"},
+        "shards": {"a.db": {"date_max": "2026-09-30"}}}', shape))
+    expect_no_error(got <- manifest_data_through(with_summary))
+    expect_equal(got, "2026-09-29", info = shape)
+
+    shards_only <- manifest_json(sprintf(
+      '{"data_through": %s, "shards": {"a.db": {"date_max": "2026-09-30"}}}', shape))
+    expect_equal(manifest_data_through(shards_only), "2026-09-30", info = shape)
+  }
+  # A summary that is not an object, or whose value is not one string, is passed over too.
+  for (summary in c('"2026-09-29"', '[]', '{"data_through": ["2026-09-29", "x"]}',
+                    '{"data_through": 20260929}')) {
+    man <- manifest_json(sprintf('{"summary": %s, "shards": {"a.db": {"date_max": "2026-09-30"}}}',
+                                 summary))
+    expect_no_error(got <- manifest_data_through(man))
+    expect_equal(got, "2026-09-30", info = summary)
+  }
+  # A near-miss key is not read as the declared value.
+  man <- manifest_json('{"data_through_note": "2026-01", "shards": {"a.db": {"date_max": "2026-09-30"}}}')
+  expect_equal(manifest_data_through(man), "2026-09-30")
+})
+
+test_that("only the exact keys are read at every level", {
+  shards <- '"shards": {"a.db": {"date_max": "2026-09-30"}}'
+  for (near in c('"data_through": {"monthly_note": "2026-01"}',
+                 '"summary": {"data_through_note": "2026-01"}',
+                 '"summary_note": {"data_through": "2026-01"}')) {
+    man <- manifest_json(sprintf('{%s, %s}', near, shards))
+    expect_equal(manifest_data_through(man), "2026-09-30", info = near)
+  }
+  man <- manifest_json('{"shards_note": {"a.db": {"date_max": "2026-01-01"}}}')
+  expect_true(is.na(manifest_data_through(man)))
+})
+
+test_that("the Bioconductor downloads row reports the month its producer declares", {
+  fetched <- list("bioconductor-downloads" = list(
+    cfg = list(name = "bioconductor-downloads", repo = "r-observatory/bioconductor-downloads",
+               schedule = "daily 06:00 UTC", max_age_h = 30L, rolling = TRUE, manifest = TRUE,
+               db_filename = "bioconductor-summary.db"),
+    release = list(tag = "current", published_at = "2026-07-06T12:00:00Z"),
+    manifest = manifest_json('{
+      "generated_at": "2026-09-30T11:58:16Z", "last_checked": "2026-09-30T11:58:16Z",
+      "data_through": {"monthly": "2026-08"},
+      "shards": {"bioconductor-2026.db": {"date_max": "2026-09-01"}}}'),
+    upstream = NULL,
+    integrity = list(bytes = NA_real_, sha256 = NA_character_)))
+
+  df <- build_pipeline_metadata(fetched, "2026-09-30T19:00:00Z")
+
+  expect_equal(df$data_through, "2026-08")
+})
+
 test_that("changed_summary describes manifest runs, NA without a manifest", {
   expect_equal(changed_summary(list(changed_shards = list("a", "b"))), "2 shards changed last run")
   expect_equal(changed_summary(list(changed_shards = list("a"))), "1 shard changed last run")
