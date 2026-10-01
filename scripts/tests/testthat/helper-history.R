@@ -33,3 +33,8 @@ history_test_db <- function(env = parent.frame()) {
   ensure_history_ledger(con)
   con
 }
+
+# A gh release listing.
+releases <- function(tags, published, draft = FALSE) {
+  data.frame(tag = tags, published_at = published, is_draft = draft, stringsAsFactors = FALSE)
+}
