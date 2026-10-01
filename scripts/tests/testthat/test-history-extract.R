@@ -1,4 +1,4 @@
-for (f in c("fold.R", "check_flavor_fold.R", "series.R", "extract.R")) {
+for (f in c("fold.R", "check_flavor_fold.R", "series.R", "extract.R", "assets.R")) {
   source(file.path(getwd(), "..", "..", "history", f))
 }
 
@@ -237,4 +237,36 @@ test_that("a correction note is added to a folded release", {
                                      WHERE tag = 'v20260902-060000'")$note,
                "correction: first run with version; second note")
   expect_error(record_note(con, "cran-metadata", "v20990101-000000", "x"), "no folded")
+})
+
+test_that("the command line starts fresh, records the handover first and adds notes", {
+  dir <- withr::local_tempdir()
+  work <- file.path(dir, "work")
+  files <- list("v20260901-060000" = metadata_snapshot(dir, "m1.db", c("OK", "OK", "ERROR", "OK")),
+                "v20260902-060000" = metadata_snapshot(dir, "m2.db", c("OK", "NOTE", "ERROR", "OK")))
+  io <- fake_io(releases(names(files), c("2026-09-01T06:00:09Z", "2026-09-02T06:00:09Z")), files)
+  io$release_http_status <- function(repo, tag) 404L
+  expect_error(history_main(c(paste0("--workdir=", work), "--only=cran"), io), "--only takes")
+  expect_error(history_main(c(paste0("--workdir=", work), "--flavor-handover=v20260902-060000",
+                              "--withdraw-flavor-handover=v20260902-060000"), io), "not both")
+  capture.output(history_main(c(paste0("--workdir=", work), "--only=cran-metadata",
+                                "--note=cran-metadata:v20260902-060000=correction: noted"), io))
+  files[["v20260903-060000"]] <- metadata_snapshot(dir, "m3.db", c("ERROR", "NOTE", "ERROR", "OK"),
+                                                   seeded = TRUE)
+  io <- fake_io(releases(names(files), sprintf("2026-09-0%dT06:00:09Z", 1:3)), files)
+  expect_error(capture.output(history_main(c(paste0("--workdir=", work), "--only=cran-metadata"), io)),
+               "--flavor-handover=v20260902-060000")
+  capture.output(history_main(c(paste0("--workdir=", work), "--only=cran-metadata",
+                                "--flavor-handover=v20260902-060000"), io))
+  expect_error(capture.output(history_main(c(paste0("--workdir=", work), "--only=cran-metadata",
+                                             "--withdraw-flavor-handover=v20260902-060000"), io)),
+               "the handover stands")
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(work, "history.db"))
+  on.exit(DBI::dbDisconnect(con))
+  expect_equal(DBI::dbGetQuery(con, "SELECT note FROM history_snapshots
+                                     WHERE tag = 'v20260902-060000'")$note, "correction: noted")
+  expect_equal(history_setting(con, "flavor_handover_tag"), "v20260902-060000")
+  expect_equal(DBI::dbGetQuery(con, "SELECT outcome FROM history_series_observations
+                                     WHERE tag = 'v20260903-060000' AND series = 'check_flavor_status'")$outcome,
+               "handed_over")
 })

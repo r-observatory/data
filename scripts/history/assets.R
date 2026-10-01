@@ -286,3 +286,21 @@ history_regressions <- function(prior_path, new_path) {
   }
   problems
 }
+
+if (sys.nframe() == 0L) {
+  here <- dirname(sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)))
+  for (f in c("fold.R", "check_flavor_fold.R", "series.R", "extract.R")) source(file.path(here, f))
+  args <- commandArgs(trailingOnly = TRUE)
+  arg_value <- function(flag) sub(paste0("^--", flag, "="), "", grep(paste0("^--", flag, "="), args, value = TRUE))
+  workdir <- arg_value("workdir")
+  if (length(workdir) != 1L) stop("give --workdir=DIR [--stamp=YYYY-MM-DD]", call. = FALSE)
+  stamp <- arg_value("stamp")
+  if (length(stamp) != 1L) stamp <- format(Sys.time(), "%Y-%m-%d", tz = "UTC")
+  out <- file.path(workdir, "out")
+  paths <- build_history_assets(file.path(workdir, "history.db"), out, stamp,
+                                format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"))
+  problems <- validate_history_assets(out, stamp)
+  if (length(problems)) stop(paste(c("the built pairs fail their checks:", problems), collapse = "\n"), call. = FALSE)
+  for (p in paths) cat(sprintf("%s  %.1f MB\n", p, file.size(p) / 1e6))
+  cat("Built and checked. Upload only when the owner asks: Rscript scripts/history/publish.R --workdir=", workdir, " --stamp=", stamp, "\n", sep = "")
+}

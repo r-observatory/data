@@ -366,3 +366,53 @@ run_extraction <- function(con, workdir, io = default_history_io(),
   }
   invisible(TRUE)
 }
+
+# Command line:
+#   Rscript scripts/history/extract.R --workdir=DIR [--min-free-gib=20]
+#     [--only=FAMILY] [--give-up=FAMILY:TAG] [--note=FAMILY:TAG=TEXT]
+#     [--flavor-handover=TAG | --withdraw-flavor-handover=TAG]
+history_args <- function(args) {
+  arg_value <- function(flag) sub(paste0("^--", flag, "="), "", grep(paste0("^--", flag, "="), args, value = TRUE))
+  workdir <- arg_value("workdir")
+  if (length(workdir) != 1L) stop("give --workdir=DIR", call. = FALSE)
+  min_free <- arg_value("min-free-gib")
+  list(workdir = workdir, min_free_gib = if (length(min_free)) as.numeric(min_free) else 20,
+       only = arg_value("only"), give_up = arg_value("give-up"), notes = arg_value("note"),
+       handover = arg_value("flavor-handover"), withdraw = arg_value("withdraw-flavor-handover"))
+}
+
+history_main <- function(args = commandArgs(trailingOnly = TRUE), io = default_history_io()) {
+  a <- history_args(args)
+  families <- history_families()
+  if (length(a$only)) {
+    if (!all(a$only %in% names(families))) stop("--only takes cran-metadata or data", call. = FALSE)
+    families <- families[a$only]
+  }
+  if (length(a$handover) && length(a$withdraw)) {
+    stop("give --flavor-handover or --withdraw-flavor-handover, not both", call. = FALSE)
+  }
+  dir.create(a$workdir, recursive = TRUE, showWarnings = FALSE)
+  path <- file.path(a$workdir, "history.db")
+  if (!file.exists(path)) restore_prior_history(io, path)
+  con <- DBI::dbConnect(RSQLite::SQLite(), path)
+  on.exit(DBI::dbDisconnect(con), add = TRUE)
+  ensure_history_ledger(con)
+  if (length(a$withdraw) == 1L) withdraw_flavor_handover(con, a$withdraw, io$now())
+  if (length(a$handover) == 1L) record_flavor_handover(con, a$handover)
+  run_extraction(con, a$workdir, io, families, history_series(), a$min_free_gib, a$give_up)
+  for (n in a$notes) {
+    parts <- regmatches(n, regexec("^([^:]+):([^=]+)=(.+)$", n))[[1]]
+    if (length(parts) != 4L) stop("give --note=FAMILY:TAG=TEXT", call. = FALSE)
+    record_note(con, parts[2], parts[3], parts[4])
+  }
+  print(DBI::dbGetQuery(con,
+    "SELECT family, outcome, COUNT(*) AS n, MIN(tag) AS first_tag, MAX(tag) AS last_tag
+       FROM history_snapshots GROUP BY family, outcome ORDER BY family, outcome"))
+  invisible(TRUE)
+}
+
+if (sys.nframe() == 0L) {
+  here <- dirname(sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)))
+  for (f in c("fold.R", "check_flavor_fold.R", "series.R", "assets.R")) source(file.path(here, f))
+  history_main()
+}
