@@ -105,7 +105,7 @@ dbGetQuery(con, "
 ### From `feed.db` (cran-feed)
 
 - **packages** — Current CRAN packages (name, version, title, description, maintainer, license, depends, imports, suggests, published, etc.)
-- **package_versions** — Append-only version history (package, version, event_type, previous_version, removal_reason, detected_at)
+- **package_versions**: Append-only version history (package, version, event_type, previous_version, removal_reason, detected_at). A removal's `removal_reason` is CRAN's own, from the `cran_archive_history` episode archived nearest the removal within 7 days; with no such episode it stays "no longer on CRAN".
 - **reverse_dependencies** — Reverse dependency relationships (package, rev_package, type)
 
 ### From `metadata.db` (cran-metadata)
@@ -116,7 +116,7 @@ dbGetQuery(con, "
 - **authors** — CRAN author database (package, given, family, email, role, orcid)
 - **packages_enrichment** — URL and bug report links (name, url, bug_reports)
 - **check_status_history** — Append-only status change log (package, status, flavor_summary, details, detected_at)
-- **removal_reasons** — Archival reasons for removed packages (package, reason)
+- **removal_reasons**: Archival reasons for removed packages (package, reason). cran-metadata publishes it with no rows and the merge no longer reads it. A removal's reason is in `package_versions`.
 - **package_news** — NEWS entries for recently-updated packages (package, version, news_text)
 - **cran_maintainer_bounces**: Episodes of CRAN's email to a package's maintainer bouncing (package, episode_seq, version, onset_known, first_seen, last_seen, resolved_on, outcome, archived_on). `onset_known = 0` marks an episode already open when recording began. Not in `observatory.db` until cran-metadata publishes it.
 - **cran_check_flavors**, **cran_check_flavor_status_history**: Each CRAN check flavor, and each package's check status and flags per flavor as episodes, with the checked version kept alongside. Not in `observatory.db` until cran-metadata publishes them.
