@@ -6,7 +6,8 @@ source(file.path(getwd(), "..", "..", "merge_helpers.R"))
 # keeps for its own next run, which must not be copied.
 vcs_added_tables <- c("vcs_dev_tooling_rules", "vcs_ai_search_coverage",
                       "vcs_ai_review_signals", "vcs_ai_outside_prs",
-                      "vcs_ai_ruleset_history", "vcs_repo_owner")
+                      "vcs_ai_ruleset_history", "vcs_repo_owner",
+                      "vcs_pr_quarterly", "vcs_pr_coverage", "vcs_repo_name_history")
 vcs_added_sql <- c(
   "CREATE TABLE IF NOT EXISTS vcs_dev_tooling_rules (col TEXT NOT NULL, source TEXT NOT NULL,
      rule TEXT NOT NULL, ruleset_version TEXT NOT NULL, PRIMARY KEY (col)) WITHOUT ROWID",
@@ -59,9 +60,33 @@ vcs_added_sql <- c(
       'O_rlib', 'r-lib/log4r', '2026-10-04'),
      ('github.com/r-lib/log4r', 'MDEwOlJlcG9zaXRvcnk4NjA1Njc=', 'r-lib', 'Organization',
       'O_rlib', 'r-lib/log4r', '2026-10-04')",
+  "CREATE TABLE IF NOT EXISTS vcs_pr_quarterly (
+     repo_id TEXT NOT NULL, quarter TEXT NOT NULL, association TEXT NOT NULL,
+     author_type TEXT NOT NULL, from_fork INTEGER NOT NULL CHECK (from_fork IN (0,1)),
+     fresh INTEGER NOT NULL CHECK (fresh IN (0,1)), prs INTEGER NOT NULL,
+     PRIMARY KEY (repo_id, quarter, association, author_type, from_fork, fresh)) WITHOUT ROWID",
+  "INSERT INTO vcs_pr_quarterly VALUES
+     ('github.com/r-lib/cli', '2026-Q4', 'MEMBER', 'User', 0, 1, 3),
+     ('github.com/r-lib/cli', '2026-Q4', 'NONE', 'Bot', 1, 1, 2)",
+  "CREATE TABLE IF NOT EXISTS vcs_pr_coverage (
+     repo_id TEXT PRIMARY KEY, counted_from TEXT, counted_through TEXT,
+     back_complete INTEGER NOT NULL, updated_on TEXT NOT NULL) WITHOUT ROWID",
+  "INSERT INTO vcs_pr_coverage VALUES
+     ('github.com/r-lib/cli', '2023-01-04T09:12:00Z', '2026-10-03T21:40:00Z', 1, '2026-10-04')",
+  # The log4r move of the owner-table fixture above, dated.
+  "CREATE TABLE IF NOT EXISTS vcs_repo_name_history (
+     node_id TEXT NOT NULL, episode_seq INTEGER NOT NULL, name_with_owner TEXT NOT NULL,
+     owner_node_id TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+     first_seen_exact INTEGER NOT NULL, ended_on TEXT,
+     PRIMARY KEY (node_id, episode_seq)) WITHOUT ROWID",
+  "INSERT INTO vcs_repo_name_history VALUES
+     ('MDEwOlJlcG9zaXRvcnk4NjA1Njc=', 1, 'johnmyleswhite/log4r', 'U_jmw',
+      '2026-10-01', '2026-10-01', 0, '2026-10-02'),
+     ('MDEwOlJlcG9zaXRvcnk4NjA1Njc=', 2, 'r-lib/log4r', 'O_rlib',
+      '2026-10-02', '2026-10-04', 1, NULL)",
   "CREATE TABLE IF NOT EXISTS vcs_ai_repo_reads (repo_id TEXT PRIMARY KEY,
-     commits_read_on TEXT) WITHOUT ROWID",
-  "INSERT INTO vcs_ai_repo_reads VALUES ('github.com/o/rtika2', '2026-10-04')",
+     commits_read_on TEXT, prs_count_cursor TEXT) WITHOUT ROWID",
+  "INSERT INTO vcs_ai_repo_reads VALUES ('github.com/o/rtika2', '2026-10-04', 'Y3Vyc29yOjUw')",
   "CREATE TABLE IF NOT EXISTS vcs_ai_account_counts (repo_id TEXT NOT NULL, tool TEXT NOT NULL,
      identity_set TEXT NOT NULL, commits INTEGER NOT NULL, measured_on TEXT NOT NULL,
      PRIMARY KEY (repo_id, tool, identity_set)) WITHOUT ROWID",
@@ -714,7 +739,8 @@ test_that("the added vcs-signals tables land with their keys, and the read state
   expect_equal(unlist(stats[vcs_added_tables]),
                c(vcs_dev_tooling_rules = 1, vcs_ai_search_coverage = 1,
                  vcs_ai_review_signals = 1, vcs_ai_outside_prs = 1,
-                 vcs_ai_ruleset_history = 1, vcs_repo_owner = 2))
+                 vcs_ai_ruleset_history = 1, vcs_repo_owner = 2,
+                 vcs_pr_quarterly = 2, vcs_pr_coverage = 1, vcs_repo_name_history = 2))
   ddl <- DBI::dbGetQuery(con, sprintf(
     "SELECT name, sql FROM main.sqlite_master WHERE type = 'table' AND name IN (%s)",
     paste0("'", vcs_added_tables, "'", collapse = ", ")))
@@ -875,4 +901,24 @@ test_that("the CRAN tarball table lands keyed by revision, WITHOUT ROWID and wit
      '2026-10-02', '2026-10-01')"), "CHECK constraint failed")
   expect_equal(DBI::dbGetQuery(con, "SELECT MAX(revision) AS r FROM cran_tarballs
                                      WHERE package = 'lmeInfo'")$r, 2)
+})
+
+test_that("the pull request tallies and rename episodes keep their keys and checks", {
+  dir <- withr::local_tempdir()
+  write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE, with_added = TRUE)
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  quiet_merge_sources(con, dir)
+
+  expect_error(DBI::dbExecute(con, "INSERT INTO vcs_pr_quarterly VALUES
+    ('github.com/r-lib/cli', '2026-Q4', 'MEMBER', 'User', 0, 1, 9)"), "UNIQUE")
+  expect_error(DBI::dbExecute(con, "INSERT INTO vcs_pr_quarterly VALUES
+    ('github.com/r-lib/cli', '2026-Q4', 'MEMBER', 'User', 2, 1, 1)"), "CHECK constraint failed")
+  expect_equal(DBI::dbGetQuery(con, "SELECT SUM(prs) AS n FROM vcs_pr_quarterly")$n, 5)
+  got <- DBI::dbGetQuery(con, "SELECT name_with_owner FROM vcs_repo_name_history
+                               WHERE ended_on IS NULL")
+  expect_equal(got$name_with_owner, "r-lib/log4r")
+  # The walk cursor is the producer's own state.
+  expect_false("vcs_ai_repo_reads" %in% output_tables(con))
 })

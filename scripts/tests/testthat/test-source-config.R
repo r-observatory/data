@@ -98,7 +98,8 @@ test_that("vcs-signals is registered in both merger lists", {
       "vcs_ai_models", "vcs_ai_rule_inventory", "vcs_ai_silent_channels",
       "repo_package_links", "vcs_dev_tooling_rules",
       "vcs_ai_search_coverage", "vcs_ai_review_signals", "vcs_ai_outside_prs",
-      "vcs_ai_ruleset_history", "vcs_repo_owner")
+      "vcs_ai_ruleset_history", "vcs_repo_owner",
+      "vcs_pr_quarterly", "vcs_pr_coverage", "vcs_repo_name_history")
   )
 })
 

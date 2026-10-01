@@ -123,7 +123,11 @@ source_tables <- list(
                                      "vcs_ai_outside_prs", "vcs_ai_ruleset_history",
                                      # The only merged table that carries node ids and current owners,
                                      # so a moved or renamed repository is counted once.
-                                     "vcs_repo_owner"),
+                                     "vcs_repo_owner",
+                                     # Pull requests per repository and quarter, the span each
+                                     # repository's counts cover, and dated renames and transfers.
+                                     # The walk cursor in vcs_ai_repo_reads stays out.
+                                     "vcs_pr_quarterly", "vcs_pr_coverage", "vcs_repo_name_history"),
   "cran-task-views.db"           = c("cran_task_views", "cran_task_view_events", "cran_task_view_membership")
 )
 
