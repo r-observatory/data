@@ -153,7 +153,7 @@ dbGetQuery(con, "
 ### Generated at merge time
 
 - **packages_fts** — FTS5 full-text search index over `packages` (name, title, description, maintainer). Uses porter stemming and unicode61 tokenization.
-- **pipeline_metadata**: One row per pipeline for the freshness page: schedule, release, when it last ran and last changed, and `data_through`. `data_through` is the value the producer declares (a day, or a month as `YYYY-MM` for a monthly source such as Bioconductor downloads), else the newest day its shards hold.
+- **pipeline_metadata**: One row per pipeline for the freshness page: schedule, release, when it last ran and last changed, and `data_through`. `data_through` is the value the producer declares (a day, or a month as `YYYY-MM` for a monthly source such as Bioconductor downloads), else its summary value, else the newest day its shards hold.
 
 ## Feedback
 
