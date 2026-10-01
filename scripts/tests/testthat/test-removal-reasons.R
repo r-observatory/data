@@ -78,6 +78,17 @@ test_that("the nearer of two episodes wins, whichever side of the event it falls
   expect_equal(reasons(con)$removal_reason, "nearer reason")
 })
 
+test_that("two episodes equally far from the event give the later one's reason", {
+  con <- removal_db(removed("tiepkg", "2026-06-10T08:00:00Z"),
+                    rbind(episode("tiepkg", 1L, "2026-06-08", "earlier reason",
+                                  relisted_on = "2026-06-09"),
+                          episode("tiepkg", 2L, "2026-06-12", "later reason")))
+  on.exit(DBI::dbDisconnect(con))
+
+  enrich_removal_reasons(con)
+  expect_equal(reasons(con)$removal_reason, "later reason")
+})
+
 test_that("an episode with an empty or blank reason is passed over", {
   # SQLite's one-argument TRIM strips spaces only, so a tab or a newline would
   # otherwise count as a reason and blank out the placeholder.
@@ -159,6 +170,22 @@ test_that("no reason goes from a value to NULL, and only removal events change",
   after <- reasons(con)
   expect_equal(after, before)
   expect_false(any(!is.na(before$removal_reason) & is.na(after$removal_reason)))
+})
+
+test_that("an update or a first release beside an archiving is left alone", {
+  other <- function(event_type, detected_at) {
+    data.frame(package = "relisted", event_type = event_type, removal_reason = NA_character_,
+               detected_at = detected_at, stringsAsFactors = FALSE)
+  }
+  con <- removal_db(rbind(other("updated", "2026-04-29T00:00:00Z"),
+                          removed("relisted", "2026-05-01T00:00:00Z"),
+                          other("new", "2026-05-03T00:00:00Z")),
+                    episode("relisted", 1L, "2026-05-01", "issues were not corrected in time",
+                            relisted_on = "2026-05-03"))
+  on.exit(DBI::dbDisconnect(con))
+
+  expect_equal(enrich_removal_reasons(con), 1L)
+  expect_equal(reasons(con)$removal_reason, c(NA, "issues were not corrected in time", NA))
 })
 
 test_that("merge.R gives removal reasons inside the enrichment transaction", {
