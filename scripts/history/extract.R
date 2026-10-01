@@ -122,8 +122,9 @@ plan_family_snapshots <- function(listing, family, recorded, today) {
 HISTORY_DOWNLOAD_WAITS <- c(15, 60)
 
 # Downloads a tag's database asset, checks its size and sha256 against the
-# release, expands a .zst, and returns list(path, asset, bytes, sha256). Stops
-# before downloading when free space would fall under the floor.
+# release, expands a .zst, and returns list(path, asset, bytes, sha256). Makes
+# workdir if it is missing, and stops before downloading when free space would
+# fall under the floor.
 fetch_snapshot <- function(io, family, tag, workdir, min_free_gib) {
   assets <- io$asset_info(family$repo, tag)
   ready <- assets[assets$state == "uploaded", , drop = FALSE]
@@ -136,6 +137,8 @@ fetch_snapshot <- function(io, family, tag, workdir, min_free_gib) {
   row <- ready[ready$name == pick, , drop = FALSE][1, ]
   zst <- grepl("\\.zst$", pick)
   need <- row$size * (if (zst) 8 else 1) / 1024^3
+  dir.create(workdir, recursive = TRUE, showWarnings = FALSE)
+  if (!dir.exists(workdir)) stop("could not make the work directory ", workdir, call. = FALSE)
   free <- io$free_gib(workdir)
   if (free - need < min_free_gib) {
     stop(sprintf(paste("stopping before %s@%s: %.1f GiB free, it needs about %.1f GiB",

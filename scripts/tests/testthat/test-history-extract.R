@@ -100,6 +100,29 @@ test_that("the run stops before a download that would cross the free-space floor
   expect_length(io$state$downloads, 0L)
 })
 
+test_that("free space is read with df in a work directory that did not exist yet", {
+  dir <- withr::local_tempdir()
+  path <- metadata_snapshot(dir, "m1.db", c("OK", "OK", "ERROR", "OK"))
+  io <- fake_io(releases("v20260901-060000", "2026-09-01T06:00:00Z"),
+                list("v20260901-060000" = path))
+  io$free_gib <- default_history_io()$free_gib
+  work <- file.path(dir, "not", "made", "yet")
+  got <- fetch_snapshot(io, families$`cran-metadata`, "v20260901-060000", work, 0)
+  expect_true(dir.exists(work))
+  expect_equal(unname(tools::md5sum(got$path)), unname(tools::md5sum(path)))
+})
+
+test_that("a work directory that cannot be made stops the run before any download", {
+  dir <- withr::local_tempdir()
+  path <- metadata_snapshot(dir, "m1.db", c("OK", "OK", "ERROR", "OK"))
+  io <- fake_io(releases("v20260901-060000", "2026-09-01T06:00:00Z"),
+                list("v20260901-060000" = path))
+  expect_error(fetch_snapshot(io, families$`cran-metadata`, "v20260901-060000", path, 20),
+               "could not make the work directory")
+  expect_length(io$state$downloads, 0L)
+  expect_length(io$state$sleeps, 0L)
+})
+
 test_that("a snapshot path a file: URI would misread is refused", {
   dir <- withr::local_tempdir()
   odd <- file.path(dir, "a?b")
