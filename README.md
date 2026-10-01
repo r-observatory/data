@@ -128,8 +128,8 @@ dbGetQuery(con, "
 
 ### From `autoobs-downloads-summary.db` (autoobs-downloads)
 
-- **autoobs_downloads_summary** — Per-package openSUSE autoCRAN download stats (package, package_lower, id, total_1d, total_7d, total_30d, cnt_total, avg_daily_30d, rank_30d, rank_total, trend, autocran_only, first_seen, last_snapshot). `autocran_only = 1` marks names served only by autoCRAN (the count is exact); `0` means the name is also shipped elsewhere on openSUSE, so the name-aggregated count is a superset.
-- **autoobs_runs**: One row per autoobs-downloads run, heartbeats included: what was asked of MirrorCache and what came back, whether the day before had been aggregated upstream (`day_aggregated`), whether the counters kept from earlier runs loaded (`counters_prior`: `loaded`, `none` or `download_failed`), and whether this run's counters were saved (`counters_published`). A day MirrorCache had not aggregated reads differently from a day of zero downloads. Not in `observatory.db` until autoobs-downloads publishes it.
+- **autoobs_downloads_summary** — Per-package openSUSE autoCRAN download stats (package, package_lower, id, total_1d, total_7d, total_30d, cnt_total, avg_daily_30d, rank_30d, trend, autocran_only, first_seen, last_snapshot). `autocran_only = 1` marks names served only by autoCRAN (the count is exact); `0` means the name is also shipped elsewhere on openSUSE, so the name-aggregated count is a superset. `cnt_total` is MirrorCache's retained total, not a lifetime count, and `total_1d` is NULL until MirrorCache has counted the day before the snapshot.
+- **autoobs_runs**: One row per autoobs-downloads run, heartbeats included: what was asked of MirrorCache and what came back, whether the day before had been aggregated upstream (`day_aggregated`), whether the counters kept from earlier runs loaded (`counters_prior`: `loaded`, `none` or `download_failed`), and whether this run's counters were saved (`counters_published`). A day MirrorCache had not aggregated reads differently from a day of zero downloads.
 
 ### From `copr-downloads-summary.db` (copr-downloads)
 
