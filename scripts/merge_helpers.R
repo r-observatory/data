@@ -535,6 +535,15 @@ missing_expected_tables <- function(source_present, expected, present_tables) {
   setdiff(expected, present_tables)
 }
 
+#' TRUE when the output holds both tables the removal-reason step reads.
+removal_reason_tables_present <- function(con) {
+  has <- function(tbl) {
+    nrow(DBI::dbGetQuery(con, "SELECT 1 FROM main.sqlite_master
+                               WHERE type = 'table' AND name = ?", params = list(tbl))) > 0
+  }
+  has("package_versions") && has("cran_archive_history")
+}
+
 #' Give every removal event in package_versions CRAN's own reason: the one from
 #' the cran_archive_history episode archived nearest the event, within
 #' `window_days` days, whose reason is not blank. The feed can see a package
@@ -543,11 +552,7 @@ missing_expected_tables <- function(source_present, expected, present_tables) {
 #'
 #' @return the number of events updated; 0 when either table is absent.
 enrich_removal_reasons <- function(con, window_days = 7L) {
-  has <- function(tbl) {
-    nrow(DBI::dbGetQuery(con, "SELECT 1 FROM main.sqlite_master
-                               WHERE type = 'table' AND name = ?", params = list(tbl))) > 0
-  }
-  if (!has("package_versions") || !has("cran_archive_history")) return(0L)
+  if (!removal_reason_tables_present(con)) return(0L)
 
   # Days apart, by date. julianday() of a date that does not parse is NULL, and
   # a NULL distance matches nothing. TRIM with an explicit set, because its
@@ -567,4 +572,15 @@ enrich_removal_reasons <- function(con, window_days = 7L) {
         AND EXISTS (SELECT 1 FROM cran_archive_history h WHERE %s)",
     near, gap, near), params = list(window = as.integer(window_days)))
   as.integer(n)
+}
+
+#' The merge log's line for the removal-reason step: that it was skipped when a
+#' table is absent, else how many removal events took CRAN's reason and how many
+#' keep what cran-feed wrote.
+removal_reason_note <- function(con, n_updated) {
+  if (!removal_reason_tables_present(con)) return("Skipped: required tables not found")
+  n_removed <- DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM package_versions
+                                     WHERE event_type = 'removed'")$n
+  sprintf("Gave %d removal events CRAN's archive reason; %d keep cran-feed's text",
+          as.integer(n_updated), as.integer(n_removed - n_updated))
 }

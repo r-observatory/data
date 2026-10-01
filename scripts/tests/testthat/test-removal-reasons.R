@@ -188,6 +188,29 @@ test_that("an update or a first release beside an archiving is left alone", {
   expect_equal(reasons(con)$removal_reason, c(NA, "issues were not corrected in time", NA))
 })
 
+test_that("the log line tells a skipped step from one that matched nothing", {
+  matched <- removal_db(
+    rbind(removed("tsxtreme", "2026-09-27T20:37:57Z"),
+          removed("farpkg", "2026-01-15T00:00:00Z"),
+          data.frame(package = "tsxtreme", event_type = "updated", removal_reason = NA_character_,
+                     detected_at = "2026-09-20T00:00:00Z", stringsAsFactors = FALSE)),
+    episode("tsxtreme", 1L, "2026-09-27", "issues were not corrected in time"))
+  on.exit(DBI::dbDisconnect(matched))
+  expect_equal(removal_reason_note(matched, enrich_removal_reasons(matched)),
+               "Gave 1 removal events CRAN's archive reason; 1 keep cran-feed's text")
+
+  unmatched <- removal_db(removed("farpkg", "2026-01-15T00:00:00Z"),
+                          episode("farpkg", 1L, "2025-11-01", "long before"))
+  on.exit(DBI::dbDisconnect(unmatched), add = TRUE)
+  expect_equal(removal_reason_note(unmatched, enrich_removal_reasons(unmatched)),
+               "Gave 0 removal events CRAN's archive reason; 1 keep cran-feed's text")
+
+  absent <- removal_db(removed("tsxtreme", "2026-09-27T20:37:57Z"))
+  on.exit(DBI::dbDisconnect(absent), add = TRUE)
+  expect_equal(removal_reason_note(absent, enrich_removal_reasons(absent)),
+               "Skipped: required tables not found")
+})
+
 test_that("merge.R gives removal reasons inside the enrichment transaction", {
   src <- readLines(file.path(getwd(), "..", "..", "merge.R"))
   begin <- grep('dbExecute(con, "BEGIN TRANSACTION")', src, fixed = TRUE)
@@ -195,6 +218,7 @@ test_that("merge.R gives removal reasons inside the enrichment transaction", {
   commit <- grep('dbExecute(con, "COMMIT")', src, fixed = TRUE)
   expect_length(call, 1L)
   expect_true(any(begin < call) && any(commit > call))
+  expect_length(grep("removal_reason_note(con, n_updated)", src, fixed = TRUE), 1L)
   # removal_reasons is empty upstream and no longer read.
   expect_false(any(grepl("FROM removal_reasons", src, fixed = TRUE)))
 })

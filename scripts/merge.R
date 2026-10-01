@@ -213,7 +213,7 @@ cat("\n")
 # ---------------------------------------------------------------------------
 cat("--- Enriching package_versions with removal reasons ---\n")
   n_updated <- enrich_removal_reasons(con)
-  cat("  Gave", n_updated, "removal events CRAN's archive reason\n")
+  cat("  ", removal_reason_note(con, n_updated), "\n", sep = "")
 
   dbExecute(con, "COMMIT")
 }, error = function(e) {
