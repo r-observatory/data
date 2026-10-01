@@ -108,3 +108,133 @@ test_that("a snapshot path a file: URI would misread is refused", {
   con <- history_test_db()
   expect_error(attach_snapshot(con, path), "file: URI")
 })
+
+test_that("a listing that reaches the limit stops the run", {
+  con <- history_test_db()
+  many <- releases(sprintf("v20260101-%06d", seq_len(1000)), "2026-01-01T00:00:00Z")
+  io <- fake_io(many, list())
+  expect_error(run_extraction(con, tempdir(), io, cran_only()), "the most one listing returns")
+})
+
+run_three <- function(con, dir, fail = list(), give_up = character(0)) {
+  tags <- c("v20260901-060000", "v20260902-060000", "v20260903-060000")
+  files <- list(metadata_snapshot(dir, "m1.db", c("OK", "OK", "ERROR", "OK")),
+                metadata_snapshot(dir, "m2.db", c("OK", "OK", "ERROR", "OK"), "2026-10-17"),
+                metadata_snapshot(dir, "m3.db", c("OK", "NOTE", "ERROR", "OK"), "2026-10-17"))
+  io <- fake_io(releases(tags, sprintf("2026-09-0%dT06:00:09Z", 1:3)),
+                stats::setNames(files, tags), fail = fail)
+  run_extraction(con, file.path(dir, "w"), io, cran_only(), give_up = give_up)
+  io
+}
+
+test_that("each release is folded once, and a second run reads nothing", {
+  dir <- withr::local_tempdir()
+  con <- history_test_db()
+  run_three(con, dir)
+  snaps <- DBI::dbGetQuery(con, "SELECT tag, outcome, asset, sha256 FROM history_snapshots ORDER BY tag")
+  expect_equal(snaps$outcome, rep("processed", 3))
+  expect_false(anyNA(snaps$sha256))
+  obs <- DBI::dbGetQuery(con, "SELECT series, outcome FROM history_series_observations
+                                WHERE tag = 'v20260903-060000' ORDER BY series")
+  expect_equal(obs$series, c("check_deadline", "check_flavor_status", "check_issue", "check_timing"))
+  expect_equal(obs$outcome, rep("applied", 4))
+  dl <- DBI::dbGetQuery(con, "SELECT episode_seq, deadline, ended_on FROM cran_check_deadline_history")
+  expect_equal(dl$deadline, c("2026-10-10", "2026-10-17"))
+  expect_equal(dl$ended_on, c("2026-09-02", NA))
+  before <- DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM cran_check_timing_history")$n
+  io <- run_three(con, dir)
+  expect_length(io$state$downloads, 0L)
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM cran_check_timing_history")$n, before)
+  expect_equal(nrow(DBI::dbGetQuery(con, "SELECT * FROM history_snapshots")), 3L)
+})
+
+test_that("a run that stops partway resumes at the release it stopped on", {
+  dir <- withr::local_tempdir()
+  con <- history_test_db()
+  expect_error(run_three(con, dir, fail = list("v20260902-060000" = 3L)), "after 3 attempts")
+  expect_equal(DBI::dbGetQuery(con, "SELECT tag FROM history_snapshots")$tag, "v20260901-060000")
+  io <- run_three(con, dir)
+  expect_equal(io$state$downloads, c("v20260902-060000", "v20260903-060000"))
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM history_snapshots")$n, 3L)
+})
+
+test_that("a fold that fails leaves nothing of that release behind", {
+  dir <- withr::local_tempdir()
+  con <- history_test_db()
+  path <- metadata_snapshot(dir, "m1.db", c("OK", "OK", "ERROR", "OK"))
+  io <- fake_io(releases("v20260901-060000", "2026-09-01T06:00:09Z"), list("v20260901-060000" = path))
+  broken <- history_series()
+  broken[[4]]$values <- function(cols) stop("the deadline columns could not be read")
+  expect_error(run_extraction(con, file.path(dir, "w"), io, cran_only(), broken),
+               "v20260901-060000: the deadline columns could not be read")
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM history_snapshots")$n, 0L)
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM history_series_observations")$n, 0L)
+  expect_false(history_table_exists(con, "cran_check_timing_history"))
+  expect_false("snap" %in% DBI::dbGetQuery(con, "PRAGMA database_list")$name)
+})
+
+test_that("a release given up on is recorded as failed and the run goes on", {
+  dir <- withr::local_tempdir()
+  con <- history_test_db()
+  io <- run_three(con, dir, give_up = "cran-metadata:v20260902-060000")
+  expect_equal(io$state$downloads, c("v20260901-060000", "v20260903-060000"))
+  got <- DBI::dbGetQuery(con, "SELECT tag, outcome FROM history_snapshots ORDER BY tag")
+  expect_equal(got$outcome, c("processed", "failed", "processed"))
+})
+
+test_that("the status series stops at the release cran-metadata seeded from, and the timings go on", {
+  dir <- withr::local_tempdir()
+  con <- history_test_db()
+  run_three(con, dir)
+  path <- metadata_snapshot(dir, "m4.db", c("ERROR", "NOTE", "ERROR", "OK"), "2026-10-17", seeded = TRUE)
+  io <- fake_io(releases("v20260904-060000", "2026-09-04T06:00:09Z"), list("v20260904-060000" = path))
+  expect_error(run_extraction(con, file.path(dir, "w"), io, cran_only()),
+               "v20260904-060000 carries its own .* seeded from v20260903-060000.*--flavor-handover=v20260903-060000")
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM history_snapshots")$n, 3L)
+  expect_error(record_flavor_handover(con, "v20260902-060000"), "newest folded")
+  record_flavor_handover(con, "v20260903-060000")
+  expect_error(record_flavor_handover(con, "v20260904-060000"), "already recorded")
+  statuses <- DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM cran_check_flavor_status_history")$n
+  run_extraction(con, file.path(dir, "w"), io, cran_only())
+  obs <- DBI::dbGetQuery(con, "SELECT series, outcome FROM history_series_observations
+                                WHERE tag = 'v20260904-060000' ORDER BY series")
+  expect_equal(obs$outcome[obs$series == "check_flavor_status"], "handed_over")
+  expect_equal(obs$outcome[obs$series == "check_timing"], "applied")
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM cran_check_flavor_status_history")$n,
+               statuses)
+  expect_error(withdraw_flavor_handover(con, "v20260903-060000", "2026-10-01T00:00:00Z"),
+               "the handover stands")
+})
+
+test_that("a handover no seed followed stops the next release until it is withdrawn", {
+  dir <- withr::local_tempdir()
+  con <- history_test_db()
+  run_three(con, dir)
+  record_flavor_handover(con, "v20260903-060000")
+  path <- metadata_snapshot(dir, "m4.db", c("ERROR", "NOTE", "ERROR", "OK"), "2026-10-17")
+  io <- fake_io(releases("v20260904-060000", "2026-09-04T06:00:09Z"), list("v20260904-060000" = path))
+  expect_error(run_extraction(con, file.path(dir, "w"), io, cran_only()),
+               "v20260904-060000 has no per-flavor .*--withdraw-flavor-handover=v20260903-060000")
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM history_snapshots")$n, 3L)
+  expect_error(withdraw_flavor_handover(con, "v20260902-060000", "2026-10-01T00:00:00Z"),
+               "no flavor status handover is recorded at v20260902-060000")
+  withdraw_flavor_handover(con, "v20260903-060000", "2026-10-01T00:00:00Z")
+  expect_true(is.na(history_setting(con, "flavor_handover_tag")))
+  expect_equal(history_setting(con, "flavor_handover_withdrawn:2026-10-01T00:00:00Z"), "v20260903-060000")
+  run_extraction(con, file.path(dir, "w"), io, cran_only())
+  expect_equal(DBI::dbGetQuery(con, "SELECT outcome FROM history_series_observations
+                                     WHERE tag = 'v20260904-060000' AND series = 'check_flavor_status'")$outcome,
+               "applied")
+})
+
+test_that("a correction note is added to a folded release", {
+  dir <- withr::local_tempdir()
+  con <- history_test_db()
+  run_three(con, dir)
+  record_note(con, "cran-metadata", "v20260902-060000", "correction: first run with version")
+  record_note(con, "cran-metadata", "v20260902-060000", "second note")
+  expect_equal(DBI::dbGetQuery(con, "SELECT note FROM history_snapshots
+                                     WHERE tag = 'v20260902-060000'")$note,
+               "correction: first run with version; second note")
+  expect_error(record_note(con, "cran-metadata", "v20990101-000000", "x"), "no folded")
+})

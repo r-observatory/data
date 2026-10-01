@@ -192,3 +192,177 @@ detach_snapshot <- function(con) {
   if ("snap" %in% attached) DBI::dbExecute(con, "DETACH DATABASE snap")
   invisible(NULL)
 }
+
+history_setting <- function(con, key) {
+  v <- DBI::dbGetQuery(con, "SELECT value FROM history_settings WHERE key = ?",
+                       params = list(key))$value
+  if (length(v) == 0L) NA_character_ else v
+}
+
+record_observation <- function(con, family, tag, series, o) {
+  num <- function(x) if (is.null(x)) NA_integer_ else as.integer(x)
+  chr <- function(x) if (is.null(x) || length(x) == 0L) NA_character_ else as.character(x)
+  DBI::dbExecute(con,
+    "INSERT OR REPLACE INTO history_series_observations
+       (family, tag, series, rows_read, rows_kept, outcome, source_as_of, columns,
+        fingerprint, filled, extended, closed, opened)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    params = list(family, tag, series, num(o$rows_read), num(o$rows_kept), o$outcome,
+                  chr(o$source_as_of), chr(o$columns), chr(o$fingerprint), num(o$filled),
+                  num(o$extended), num(o$closed), num(o$opened)))
+}
+
+record_snapshot <- function(con, family, row, outcome, now, got = NULL, note = NA_character_) {
+  DBI::dbExecute(con,
+    "INSERT OR REPLACE INTO history_snapshots
+       (family, tag, snapshot_at, snapshot_on, asset, bytes, sha256, outcome, note, processed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    params = list(family, row$tag, row$published_at, row$snapshot_on,
+                  got$asset %||% NA_character_, got$bytes %||% NA_real_,
+                  got$sha256 %||% NA_character_, outcome, note, now))
+}
+
+newest_folded_tag <- function(con, family) {
+  tag <- DBI::dbGetQuery(con,
+    "SELECT tag FROM history_snapshots WHERE family = ? AND outcome = 'processed'
+      ORDER BY snapshot_on DESC LIMIT 1", params = list(family))$tag
+  if (length(tag) == 0L) NA_character_ else tag
+}
+
+# Whether the attached cran-metadata release is past the flavor handover.
+# cran-metadata carries its own per-flavor tables from the run that seeded
+# them, so such a release waits for the handover, and the first release after
+# a handover must carry them.
+check_flavor_handover <- function(con, tag) {
+  handover <- history_setting(con, "flavor_handover_tag")
+  carries <- history_table_exists(con, "cran_check_flavor_status_history", "snap")
+  newest <- newest_folded_tag(con, "cran-metadata")
+  if (is.na(handover) && carries) {
+    stop(sprintf(paste("cran-metadata %s carries its own per-flavor status history, so it seeded",
+                       "from %s; once its release notes say so, run again with --flavor-handover=%s"),
+                 tag, newest, newest), call. = FALSE)
+  }
+  if (!is.na(handover) && !carries && identical(newest, handover)) {
+    stop(sprintf(paste("cran-metadata %s has no per-flavor status history, so nothing seeded since",
+                       "the handover at %s; if no run seeded from it, run again with",
+                       "--withdraw-flavor-handover=%s"), tag, handover, handover), call. = FALSE)
+  }
+  !is.na(handover)
+}
+
+# Folds every series of the family from one snapshot, plus its ledger rows
+# and any same-day releases it supersedes, in one transaction.
+process_snapshot <- function(con, family, row, got, series_list, now, siblings = NULL) {
+  attach_snapshot(con, got$path)
+  on.exit(detach_snapshot(con), add = TRUE)
+  mine <- Filter(function(s) identical(s$family, family$name), series_list)
+  handed_over <- identical(family$name, "cran-metadata") && check_flavor_handover(con, row$tag)
+  DBI::dbBegin(con)
+  tryCatch({
+    obs <- list()
+    if (any(vapply(mine, function(s) identical(s$kind, "check_flavor"), logical(1)))) {
+      obs <- apply_check_series(con, family, row$snapshot_on, mine, handed_over)
+    }
+    for (s in mine) {
+      if (!is.null(obs[[s$name]])) next
+      prior <- last_applied(con, family$name, s$name)
+      obs[[s$name]] <- apply_episode_series(con, s, row$snapshot_on, prior)
+    }
+    for (name in names(obs)) record_observation(con, family$name, row$tag, name, obs[[name]])
+    record_snapshot(con, family$name, row, "processed", now, got)
+    if (!is.null(siblings) && nrow(siblings) > 0L) {
+      for (i in seq_len(nrow(siblings))) {
+        record_snapshot(con, family$name, siblings[i, ], "superseded", now,
+                        note = siblings$note[i])
+      }
+    }
+    DBI::dbCommit(con)
+  }, error = function(e) {
+    try(DBI::dbRollback(con), silent = TRUE)
+    stop(sprintf("%s %s: %s", family$name, row$tag, conditionMessage(e)), call. = FALSE)
+  })
+  invisible(obs)
+}
+
+record_flavor_handover <- function(con, tag) {
+  current <- history_setting(con, "flavor_handover_tag")
+  if (!is.na(current)) {
+    if (identical(current, tag)) return(invisible(tag))
+    stop("the flavor status handover is already recorded at ", current, call. = FALSE)
+  }
+  last <- newest_folded_tag(con, "cran-metadata")
+  if (!identical(last, tag)) {
+    stop(sprintf("the handover tag must be the newest folded cran-metadata release (%s), not %s",
+                 if (is.na(last)) "none" else last, tag), call. = FALSE)
+  }
+  DBI::dbExecute(con, "INSERT INTO history_settings (key, value) VALUES ('flavor_handover_tag', ?)",
+                 params = list(tag))
+  invisible(tag)
+}
+
+# Undoes a handover no seed followed, while nothing after it is folded. The
+# row is kept under a dated key as the record of it.
+withdraw_flavor_handover <- function(con, tag, now) {
+  current <- history_setting(con, "flavor_handover_tag")
+  if (!identical(current, tag)) {
+    stop(sprintf("no flavor status handover is recorded at %s (recorded: %s)", tag,
+                 if (is.na(current)) "none" else current), call. = FALSE)
+  }
+  if (!identical(newest_folded_tag(con, "cran-metadata"), tag)) {
+    stop(sprintf(paste("cran-metadata releases after %s carried their own per-flavor status",
+                       "history when folded, so the handover stands"), tag), call. = FALSE)
+  }
+  DBI::dbExecute(con, "UPDATE history_settings SET key = ? WHERE key = 'flavor_handover_tag'",
+                 params = list(paste0("flavor_handover_withdrawn:", now)))
+  invisible(tag)
+}
+
+record_note <- function(con, family, tag, note) {
+  n <- DBI::dbExecute(con,
+    "UPDATE history_snapshots SET note = CASE WHEN note IS NULL THEN ? ELSE note || '; ' || ? END
+      WHERE family = ? AND tag = ? AND outcome = 'processed'",
+    params = list(note, note, family, tag))
+  if (n != 1L) stop(sprintf("no folded %s release %s to note", family, tag), call. = FALSE)
+  invisible(n)
+}
+
+run_extraction <- function(con, workdir, io = default_history_io(),
+                           families = history_families(), series_list = history_series(),
+                           min_free_gib = 20, give_up = character(0)) {
+  ensure_history_ledger(con)
+  today <- io$today()
+  for (family in families) {
+    listing <- io$list_releases(family$repo)
+    if (nrow(listing) >= HISTORY_LIST_LIMIT) {
+      stop(sprintf("%s lists %d releases, the most one listing returns; raise HISTORY_LIST_LIMIT",
+                   family$repo, nrow(listing)), call. = FALSE)
+    }
+    recorded <- DBI::dbGetQuery(con,
+      "SELECT tag, snapshot_on, outcome FROM history_snapshots WHERE family = ?",
+      params = list(family$name))
+    plan <- plan_family_snapshots(listing, family, recorded, today)
+    upfront <- plan[plan$action != "process" & is.na(plan$superseded_by), , drop = FALSE]
+    if (nrow(upfront) > 0L) {
+      DBI::dbWithTransaction(con, for (i in seq_len(nrow(upfront))) {
+        record_snapshot(con, family$name, upfront[i, ], upfront$action[i], io$now(),
+                        note = upfront$note[i])
+      })
+    }
+    todo <- plan[plan$action == "process", , drop = FALSE]
+    for (i in seq_len(nrow(todo))) {
+      row <- todo[i, ]
+      siblings <- plan[plan$action == "superseded" & !is.na(plan$superseded_by) &
+                         plan$superseded_by == row$tag, , drop = FALSE]
+      if (paste0(family$name, ":", row$tag) %in% give_up) {
+        record_snapshot(con, family$name, row, "failed", io$now(),
+                        note = "given up after its asset could not be read")
+        next
+      }
+      got <- fetch_snapshot(io, family, row$tag, workdir, min_free_gib)
+      process_snapshot(con, family, row, got, series_list, io$now(), siblings)
+      unlink(dirname(got$path), recursive = TRUE)
+      message(sprintf("%s %s folded (%d of %d)", family$name, row$tag, i, nrow(todo)))
+    }
+  }
+  invisible(TRUE)
+}
