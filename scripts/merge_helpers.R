@@ -39,7 +39,8 @@ tables_to_merge_from <- function(source_name, config) {
 # ---------------------------------------------------------------------------
 # Source databases to merge, in order.
 # source_tables: NULL means "merge all tables"; a character vector means
-# "merge only these tables".
+# "merge only these tables". A listed table the source does not have yet
+# copies nothing, so some are named here before their pipeline publishes them.
 # ---------------------------------------------------------------------------
 source_dbs <- c(
   "feed.db",
@@ -66,19 +67,31 @@ source_dbs <- c(
 
 source_tables <- list(
   "feed.db"                      = NULL,
+  # Whole source. cran_maintainer_bounces, cran_check_flavors and
+  # cran_check_flavor_status_history arrive once cran-metadata publishes them.
   "metadata.db"                  = NULL,
   "downloads-summary.db"         = c("downloads_summary"),
   "r2u-summary.db"               = c("r2u_downloads_summary"),
-  "autoobs-downloads-summary.db" = c("autoobs_downloads_summary"),
+  # autoobs_runs tells a day MirrorCache had not aggregated from a zero. The raw
+  # counters and the day ledger stay in the pipeline's own assets.
+  "autoobs-downloads-summary.db" = c("autoobs_downloads_summary", "autoobs_runs"),
   "copr-downloads-summary.db"    = c("copr_downloads_summary"),
   "conda-forge-downloads-summary.db" = c("conda_forge_downloads_summary"),
   "bioconda-downloads-summary.db"    = c("bioconda_downloads_summary"),
   "c2d4u-downloads-summary.db"    = c("c2d4u_downloads_summary"),
   "bioconductor-summary.db"      = c("bioc_downloads_summary"),
+  # Whole source. queue_archive_episodes and queue_archive_reads (the daily read of
+  # CRAN's incoming/archive folder) arrive once cran-queue publishes them.
   "queue.db"                     = NULL,
   # bioc_vignettes is the current release's vignette list, one row per file with its link.
-  "bioconductor-metadata.db"     = c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges", "bioc_names_all", "bioc_vignettes"),
-  "cran-archive.db"              = c("cran_archive", "cran_archive_events", "cran_names_all", "cran_archive_history", "cran_archive_lineage", "cran_archive_action_counts"),
+  # bioc_build_reports, bioc_build_status_history and bioc_views_history are the daily
+  # build report and VIEWS read as episodes; upstream keeps only the latest report.
+  "bioconductor-metadata.db"     = c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges", "bioc_names_all", "bioc_vignettes",
+                                     "bioc_build_reports", "bioc_build_status_history", "bioc_views_history"),
+  # cran_tarballs is one row per CRAN source tarball file with its exact size and
+  # mtime, so a same-version re-upload is its own revision. The MD5 is filled only
+  # for a file seen while it was current.
+  "cran-archive.db"              = c("cran_archive", "cran_archive_events", "cran_names_all", "cran_archive_history", "cran_archive_lineage", "cran_archive_action_counts", "cran_tarballs"),
   # Code tables only; dataset tables now live in the *-data-metrics.db sources.
   # The dataset row_sketch table is deliberately EXCLUDED: it is an offline
   # near-duplicate structure that the viewer never queries, so it stays in the
@@ -116,9 +129,17 @@ source_tables <- list(
                                      "vcs_ai_outside_prs", "vcs_ai_ruleset_history",
                                      # The only merged table that carries node ids and current owners,
                                      # so a moved or renamed repository is counted once.
-                                     "vcs_repo_owner"),
+                                     "vcs_repo_owner",
+                                     # Pull requests per repository and quarter, the span each
+                                     # repository's counts cover, and dated renames and transfers.
+                                     # The walk cursor in vcs_ai_repo_reads stays out.
+                                     "vcs_pr_quarterly", "vcs_pr_coverage", "vcs_repo_name_history"),
   "cran-task-views.db"           = c("cran_task_views", "cran_task_view_events", "cran_task_view_membership")
 )
+
+#' Table names two sources may both bring, as table name -> the sources allowed
+#' to share it. Empty: no two sources carry one table name today.
+allowed_table_overlaps <- list()
 
 #' <table>__<index>, for an index whose own name is taken in the output. Cut to
 #' 64 characters, the most MySQL allows, since the viewer mirrors index names.
@@ -347,20 +368,50 @@ source_failure_detail <- function(stats) {
   gsub("[\t\r\n]+", " ", paste(parts, collapse = "; "))
 }
 
+#' The tables a source DB would copy under its allowlist, read from its own
+#' schema. NULL when the file cannot be read, which merge_source_db then reports.
+source_table_names <- function(src_path, allow) {
+  found <- tryCatch({
+    src <- DBI::dbConnect(RSQLite::SQLite(), src_path)
+    on.exit(DBI::dbDisconnect(src), add = TRUE)
+    DBI::dbGetQuery(src, "SELECT name FROM sqlite_master
+                          WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")$name
+  }, error = function(e) NULL)
+  if (is.null(found) || is.null(allow)) return(found)
+  found[found %in% allow]
+}
+
+#' TRUE when `overlaps` lists every one of `srcs` for this table name.
+overlap_allowed <- function(tbl, srcs, overlaps) {
+  hit <- which(tolower(names(overlaps)) == tolower(tbl))
+  length(hit) > 0 && all(srcs %in% overlaps[[hit[1]]])
+}
+
 #' Merge every source DB in order into the output connection. A source that is
 #' missing is skipped and one that fails is reported, and either way the loop
 #' goes on to the next source.
+#'
+#' No table name may come from two sources. SQLite matches table names without
+#' regard to case, and CREATE TABLE IF NOT EXISTS plus INSERT OR REPLACE would
+#' pour a second source's rows into the first one's table. The first source to
+#' bring a name keeps it; a later one is refused that table and so does not
+#' merge whole, unless `overlaps` lists both sources for the name.
 #'
 #' @param con         output connection.
 #' @param sources_dir directory the source DBs were downloaded into.
 #' @param dbs         source DB file names, in merge order.
 #' @param tables      per-source allowlists, shaped like source_tables.
+#' @param overlaps    table name -> sources allowed to share it, shaped like
+#'   allowed_table_overlaps.
 #' @return named list keyed by source file: status "merged", "skipped" or
 #'   "error". A source that copied carries file_size, tables (rows per table),
-#'   failed_tables and indexes, and is "error" when any table or index failed.
-#'   One that failed outright carries only the reason.
-merge_sources <- function(con, sources_dir, dbs = source_dbs, tables = source_tables) {
+#'   failed_tables and indexes, and is "error" when any table or index failed
+#'   or a table was refused. One that failed outright carries only the reason.
+merge_sources <- function(con, sources_dir, dbs = source_dbs, tables = source_tables,
+                          overlaps = allowed_table_overlaps) {
   merge_stats <- list()
+  # Lower-cased table name -> the source that brought it and its spelling there.
+  taken <- list()
 
   for (db_file in dbs) {
     src_path <- file.path(sources_dir, db_file)
@@ -378,14 +429,30 @@ merge_sources <- function(con, sources_dir, dbs = source_dbs, tables = source_ta
     file_size <- file.info(src_path)$size
     cat("  File size:", format(file_size, big.mark = ","), "bytes\n")
 
+    allow <- tables_to_merge_from(db_file, tables)
+    brings <- source_table_names(src_path, allow)
+    refused <- character()
+    for (tbl in brings) {
+      owner <- taken[[tolower(tbl)]]
+      if (is.null(owner)) {
+        taken[[tolower(tbl)]] <- list(source = db_file, name = tbl)
+      } else if (!overlap_allowed(tbl, c(owner$source, db_file), overlaps)) {
+        refused[[tbl]] <- sprintf("not copied, %s already brought a table named %s",
+                                  owner$source, owner$name)
+        cat("  Table:", tbl, "->", refused[[tbl]], "\n")
+      }
+    }
+    if (length(refused)) allow <- setdiff(brings, names(refused))
+
     merge_stats[[db_file]] <- tryCatch({
-      res <- merge_source_db(con, src_path, tables_to_merge_from(db_file, tables))
-      whole <- !length(res$failed) && !any(res$indexes$outcome == "failed")
+      res <- merge_source_db(con, src_path, allow)
+      failed <- c(res$failed, refused)
+      whole <- !length(failed) && !any(res$indexes$outcome == "failed")
       list(
         status = if (whole) "merged" else "error",
         file_size = file_size,
         tables = res$tables,
-        failed_tables = res$failed,
+        failed_tables = failed,
         indexes = res$indexes
       )
     }, error = function(e) {

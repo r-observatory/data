@@ -36,11 +36,11 @@ test_that("r2u-summary.db ingests only the r2u_downloads_summary table", {
   )
 })
 
-test_that("autoobs-downloads-summary.db ingests only the autoobs_downloads_summary table", {
-  config <- list("autoobs-downloads-summary.db" = c("autoobs_downloads_summary"))
+test_that("autoobs-downloads-summary.db ingests the summary and the run record", {
+  config <- list("autoobs-downloads-summary.db" = c("autoobs_downloads_summary", "autoobs_runs"))
   expect_equal(
     tables_to_merge_from("autoobs-downloads-summary.db", config),
-    c("autoobs_downloads_summary")
+    c("autoobs_downloads_summary", "autoobs_runs")
   )
 })
 

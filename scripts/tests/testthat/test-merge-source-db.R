@@ -6,7 +6,8 @@ source(file.path(getwd(), "..", "..", "merge_helpers.R"))
 # keeps for its own next run, which must not be copied.
 vcs_added_tables <- c("vcs_dev_tooling_rules", "vcs_ai_search_coverage",
                       "vcs_ai_review_signals", "vcs_ai_outside_prs",
-                      "vcs_ai_ruleset_history", "vcs_repo_owner")
+                      "vcs_ai_ruleset_history", "vcs_repo_owner",
+                      "vcs_pr_quarterly", "vcs_pr_coverage", "vcs_repo_name_history")
 vcs_added_sql <- c(
   "CREATE TABLE IF NOT EXISTS vcs_dev_tooling_rules (col TEXT NOT NULL, source TEXT NOT NULL,
      rule TEXT NOT NULL, ruleset_version TEXT NOT NULL, PRIMARY KEY (col)) WITHOUT ROWID",
@@ -59,9 +60,33 @@ vcs_added_sql <- c(
       'O_rlib', 'r-lib/log4r', '2026-10-04'),
      ('github.com/r-lib/log4r', 'MDEwOlJlcG9zaXRvcnk4NjA1Njc=', 'r-lib', 'Organization',
       'O_rlib', 'r-lib/log4r', '2026-10-04')",
+  "CREATE TABLE IF NOT EXISTS vcs_pr_quarterly (
+     repo_id TEXT NOT NULL, quarter TEXT NOT NULL, association TEXT NOT NULL,
+     author_type TEXT NOT NULL, from_fork INTEGER NOT NULL CHECK (from_fork IN (0,1)),
+     fresh INTEGER NOT NULL CHECK (fresh IN (0,1)), prs INTEGER NOT NULL,
+     PRIMARY KEY (repo_id, quarter, association, author_type, from_fork, fresh)) WITHOUT ROWID",
+  "INSERT INTO vcs_pr_quarterly VALUES
+     ('github.com/r-lib/cli', '2026-Q4', 'MEMBER', 'User', 0, 1, 3),
+     ('github.com/r-lib/cli', '2026-Q4', 'NONE', 'Bot', 1, 1, 2)",
+  "CREATE TABLE IF NOT EXISTS vcs_pr_coverage (
+     repo_id TEXT PRIMARY KEY, counted_from TEXT, counted_through TEXT,
+     back_complete INTEGER NOT NULL, updated_on TEXT NOT NULL) WITHOUT ROWID",
+  "INSERT INTO vcs_pr_coverage VALUES
+     ('github.com/r-lib/cli', '2023-01-04T09:12:00Z', '2026-10-03T21:40:00Z', 1, '2026-10-04')",
+  # The log4r move of the owner-table fixture above, dated.
+  "CREATE TABLE IF NOT EXISTS vcs_repo_name_history (
+     node_id TEXT NOT NULL, episode_seq INTEGER NOT NULL, name_with_owner TEXT NOT NULL,
+     owner_node_id TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+     first_seen_exact INTEGER NOT NULL, ended_on TEXT,
+     PRIMARY KEY (node_id, episode_seq)) WITHOUT ROWID",
+  "INSERT INTO vcs_repo_name_history VALUES
+     ('MDEwOlJlcG9zaXRvcnk4NjA1Njc=', 1, 'johnmyleswhite/log4r', 'U_jmw',
+      '2026-10-01', '2026-10-01', 0, '2026-10-02'),
+     ('MDEwOlJlcG9zaXRvcnk4NjA1Njc=', 2, 'r-lib/log4r', 'O_rlib',
+      '2026-10-02', '2026-10-04', 1, NULL)",
   "CREATE TABLE IF NOT EXISTS vcs_ai_repo_reads (repo_id TEXT PRIMARY KEY,
-     commits_read_on TEXT) WITHOUT ROWID",
-  "INSERT INTO vcs_ai_repo_reads VALUES ('github.com/o/rtika2', '2026-10-04')",
+     commits_read_on TEXT, prs_count_cursor TEXT) WITHOUT ROWID",
+  "INSERT INTO vcs_ai_repo_reads VALUES ('github.com/o/rtika2', '2026-10-04', 'Y3Vyc29yOjUw')",
   "CREATE TABLE IF NOT EXISTS vcs_ai_account_counts (repo_id TEXT NOT NULL, tool TEXT NOT NULL,
      identity_set TEXT NOT NULL, commits INTEGER NOT NULL, measured_on TEXT NOT NULL,
      PRIMARY KEY (repo_id, tool, identity_set)) WITHOUT ROWID",
@@ -180,10 +205,57 @@ write_bioc_code_metrics <- function(path, with_text) {
   write_db(path, sql)
 }
 
-write_bioc_catalogue <- function(path, with_vignettes) {
+# The build report and VIEWS episode tables as bioconductor-metadata declares
+# them, with their open-row indexes. One DESeq2 check episode closed on a
+# changed status and the next one open; one deprecated package.
+bioc_build_sql <- c(
+  "CREATE TABLE bioc_build_reports (
+     bioc_version TEXT NOT NULL, repo TEXT NOT NULL, report_at TEXT NOT NULL,
+     branch TEXT NOT NULL, snapshot_at TEXT, generated_at TEXT,
+     published_at TEXT NOT NULL, status_sha256 TEXT NOT NULL,
+     n_packages INTEGER NOT NULL, n_lines INTEGER NOT NULL, n_na INTEGER NOT NULL,
+     nodes TEXT NOT NULL, read_at TEXT NOT NULL, outcome TEXT NOT NULL,
+     PRIMARY KEY (bioc_version, repo, report_at))",
+  "INSERT INTO bioc_build_reports VALUES
+     ('3.23', 'bioc', '2026-09-30T13:05:00Z', 'release', '2026-09-29T17:00:00Z',
+      '2026-09-30T13:05:00Z', '2026-09-30T13:07:12Z', 'ab12', 2361, 11805, 520,
+      'nebbiolo2,palomino8,kjohnson3', '2026-10-01T06:02:00Z', 'applied')",
+  "CREATE TABLE bioc_build_status_history (
+     package TEXT NOT NULL, bioc_version TEXT NOT NULL, repo TEXT NOT NULL,
+     node TEXT NOT NULL, stage TEXT NOT NULL, episode_seq INTEGER NOT NULL,
+     status TEXT NOT NULL, detail TEXT, first_version TEXT, last_version TEXT,
+     first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+     first_seen_exact INTEGER NOT NULL, ended_on TEXT, end_reason TEXT,
+     PRIMARY KEY (package, bioc_version, repo, node, stage, episode_seq),
+     CHECK ((ended_on IS NULL) = (end_reason IS NULL)),
+     CHECK (last_seen >= first_seen))",
+  "CREATE UNIQUE INDEX ux_bioc_build_open
+     ON bioc_build_status_history(package, bioc_version, repo, node, stage) WHERE ended_on IS NULL",
+  "CREATE INDEX idx_bioc_build_open_status
+     ON bioc_build_status_history(status) WHERE ended_on IS NULL",
+  "INSERT INTO bioc_build_status_history VALUES
+     ('DESeq2', '3.23', 'bioc', 'nebbiolo2', 'checksrc', 1, 'OK', NULL, '1.52.0', '1.52.1',
+      '2026-09-29T13:05:00Z', '2026-09-29T13:05:00Z', 0, '2026-09-30T13:05:00Z', 'changed'),
+     ('DESeq2', '3.23', 'bioc', 'nebbiolo2', 'checksrc', 2, 'WARNINGS', NULL, '1.52.1', '1.52.1',
+      '2026-09-30T13:05:00Z', '2026-09-30T13:05:00Z', 1, NULL, NULL)",
+  "CREATE TABLE bioc_views_history (
+     package TEXT NOT NULL, field TEXT NOT NULL, episode_seq INTEGER NOT NULL,
+     value TEXT NOT NULL, bioc_version TEXT NOT NULL, category TEXT NOT NULL,
+     first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+     first_seen_exact INTEGER NOT NULL, ended_on TEXT,
+     PRIMARY KEY (package, field, episode_seq),
+     CHECK (last_seen >= first_seen))",
+  "CREATE UNIQUE INDEX ux_bioc_views_open
+     ON bioc_views_history(package, field) WHERE ended_on IS NULL",
+  "INSERT INTO bioc_views_history VALUES
+     ('airway', 'PackageStatus', 1, 'Deprecated', '3.23', 'experiment',
+      '2026-09-30T11:20:00Z', '2026-09-30T11:20:00Z', 0, NULL)")
+
+write_bioc_catalogue <- function(path, with_vignettes, with_builds = FALSE) {
   sql <- c(
     "CREATE TABLE bioc_packages (package TEXT PRIMARY KEY, category TEXT)",
     "INSERT INTO bioc_packages VALUES ('DESeq2', 'software'), ('airway', 'experiment')")
+  if (with_builds) sql <- c(sql, bioc_build_sql)
   if (with_vignettes) sql <- c(sql,
     "CREATE TABLE bioc_vignettes (
        package TEXT NOT NULL, release TEXT NOT NULL, category TEXT NOT NULL,
@@ -328,11 +400,10 @@ test_that("a table whose rows fail partway leaves nothing behind, not even the t
   expect_true(all(grepl("failed", vro$note)))
 })
 
-test_that("a source with one failed table is still an error, and the sources after it merge", {
+test_that("a source refused a table is still an error, and the sources after it merge", {
   dir <- withr::local_tempdir()
-  # queue.db merges every table it has. One named like a vcs table but with
-  # other columns makes the vcs copy fail partway, the source just before the
-  # task views.
+  # queue.db merges every table it has and comes before vcs-signals, so it
+  # brings repo_package_links first and the vcs table of that name is refused.
   write_db(file.path(dir, "queue.db"), "CREATE TABLE repo_package_links (repo_id TEXT)")
   write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE,
                     with_added = TRUE)
@@ -341,7 +412,7 @@ test_that("a source with one failed table is still an error, and the sources aft
   withr::defer(DBI::dbDisconnect(con))
 
   expect_warning(stats <- quiet_merge_sources(con, dir),
-                 "Error processing vcs-signals-summary.db.*repo_package_links")
+                 "Error processing vcs-signals-summary.db.*repo_package_links.*queue.db")
 
   status <- vapply(stats, function(s) s$status, character(1))
   expect_equal(status[c("queue.db", "vcs-signals-summary.db", "cran-task-views.db")],
@@ -349,6 +420,11 @@ test_that("a source with one failed table is still an error, and the sources aft
                  "cran-task-views.db" = "merged"))
   vcs <- stats[["vcs-signals-summary.db"]]
   expect_named(vcs$failed_tables, "repo_package_links")
+  expect_equal(vcs$failed_tables[["repo_package_links"]],
+               "not copied, queue.db already brought a table named repo_package_links")
+  # queue.db's table is left as it came, with none of the vcs rows in it.
+  expect_equal(DBI::dbGetQuery(con, "PRAGMA main.table_info(repo_package_links)")$name, "repo_id")
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM repo_package_links")$n, 0)
   # Every other allowlisted vcs table still lands.
   expect_setequal(names(vcs$tables), c("vcs_signals_summary", vcs_added_tables))
   expect_true(all(c("vcs_signals_summary", vcs_added_tables) %in% output_tables(con)))
@@ -374,8 +450,8 @@ test_that("the sources that did not merge whole are named with what failed", {
   failures <- merge_failures(stats)
 
   expect_named(failures, c("cran-archive.db", "vcs-signals-summary.db"), ignore.order = TRUE)
-  expect_match(failures[["vcs-signals-summary.db"]],
-               "repo_package_links.*no column named package")
+  expect_equal(failures[["vcs-signals-summary.db"]],
+               "table repo_package_links: not copied, queue.db already brought a table named repo_package_links")
   expect_match(failures[["cran-archive.db"]], "nothing merged")
   expect_false(any(grepl("[\t\n]", failures)))
 })
@@ -667,7 +743,8 @@ test_that("the added vcs-signals tables land with their keys, and the read state
   expect_equal(unlist(stats[vcs_added_tables]),
                c(vcs_dev_tooling_rules = 1, vcs_ai_search_coverage = 1,
                  vcs_ai_review_signals = 1, vcs_ai_outside_prs = 1,
-                 vcs_ai_ruleset_history = 1, vcs_repo_owner = 2))
+                 vcs_ai_ruleset_history = 1, vcs_repo_owner = 2,
+                 vcs_pr_quarterly = 2, vcs_pr_coverage = 1, vcs_repo_name_history = 2))
   ddl <- DBI::dbGetQuery(con, sprintf(
     "SELECT name, sql FROM main.sqlite_master WHERE type = 'table' AND name IN (%s)",
     paste0("'", vcs_added_tables, "'", collapse = ", ")))
@@ -728,4 +805,317 @@ test_that("columns vcs-signals adds with ALTER TABLE arrive with their tables", 
                "WITHOUT ROWID", fixed = TRUE)
   got <- DBI::dbGetQuery(con, "SELECT authored_measured_on, assisted_measured_on FROM vcs_ai_signals")
   expect_equal(unlist(got), c(authored_measured_on = "2026-10-04", assisted_measured_on = "2026-10-05"))
+})
+
+test_that("the autoobs run record lands and the counters and day ledger stay behind", {
+  dir <- withr::local_tempdir()
+  write_db(file.path(dir, "autoobs-downloads-summary.db"), c(
+    "CREATE TABLE autoobs_downloads_summary (package TEXT PRIMARY KEY, total_30d INTEGER)",
+    "INSERT INTO autoobs_downloads_summary VALUES ('Rcpp', 812)",
+    "CREATE TABLE autoobs_runs (run_id INTEGER PRIMARY KEY, run_at TEXT,
+       snapshot_date TEXT NOT NULL, source TEXT NOT NULL, outcome TEXT NOT NULL,
+       reason TEXT, day_aggregated INTEGER, window_end TEXT,
+       counters_prior TEXT, counters_published INTEGER)",
+    "INSERT INTO autoobs_runs VALUES
+       (1790741529, '2026-09-30T04:12:09Z', '2026-09-30', 'run', 'ok', NULL, 1,
+        '2026-09-29', 'loaded', 1),
+       (1790827841, '2026-10-01T04:10:41Z', '2026-10-01', 'run', 'heartbeat',
+        'no stats', 0, '2026-09-29', 'download_failed', 0)",
+    "CREATE TABLE autoobs_counters (run_id INTEGER NOT NULL, package TEXT NOT NULL,
+       cnt_today INTEGER, cnt_1d INTEGER, cnt_7d INTEGER, cnt_30d INTEGER,
+       cnt_total INTEGER, PRIMARY KEY (run_id, package)) WITHOUT ROWID",
+    "INSERT INTO autoobs_counters VALUES (1790741529, 'Rcpp', 3, 27, 190, 812, 0)",
+    "CREATE TABLE autoobs_days (date TEXT PRIMARY KEY, method TEXT NOT NULL,
+       run_id INTEGER, packages INTEGER, downloads INTEGER)",
+    "INSERT INTO autoobs_days VALUES ('2026-09-29', 'cnt_1d', 1790741529, 5210, 40112)"))
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  stats <- quiet_merge_sources(con, dir)[["autoobs-downloads-summary.db"]]
+
+  expect_equal(stats$status, "merged")
+  expect_equal(stats$tables$autoobs_runs, 2)
+  got <- DBI::dbGetQuery(con, "SELECT outcome, counters_prior FROM autoobs_runs ORDER BY run_id")
+  expect_equal(got$outcome, c("ok", "heartbeat"))
+  expect_equal(got$counters_prior, c("loaded", "download_failed"))
+  expect_false(any(c("autoobs_counters", "autoobs_days") %in% output_tables(con)))
+})
+
+test_that("the Bioconductor build and VIEWS episodes land with their open-row indexes", {
+  dir <- withr::local_tempdir()
+  write_bioc_catalogue(file.path(dir, "bioconductor-metadata.db"), with_vignettes = TRUE,
+                       with_builds = TRUE)
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  stats <- quiet_merge_sources(con, dir)[["bioconductor-metadata.db"]]
+
+  expect_equal(stats$status, "merged")
+  expect_equal(unlist(stats$tables[c("bioc_build_reports", "bioc_build_status_history",
+                                     "bioc_views_history")]),
+               c(bioc_build_reports = 1, bioc_build_status_history = 2,
+                 bioc_views_history = 1))
+  idx <- rbind(indexes_on(con, "bioc_build_status_history"), indexes_on(con, "bioc_views_history"))
+  expect_setequal(idx$name, c("ux_bioc_build_open", "idx_bioc_build_open_status",
+                              "ux_bioc_views_open"))
+  expect_true(all(grepl("WHERE ended_on IS NULL", idx$sql, fixed = TRUE)))
+  # One open episode per package, node and stage.
+  expect_error(DBI::dbExecute(con, "INSERT INTO bioc_build_status_history VALUES
+    ('DESeq2', '3.23', 'bioc', 'nebbiolo2', 'checksrc', 3, 'ERROR', NULL, '1.52.1', '1.52.1',
+     '2026-10-01T13:05:00Z', '2026-10-01T13:05:00Z', 1, NULL, NULL)"), "UNIQUE")
+  expect_error(DBI::dbExecute(con, "INSERT INTO bioc_build_status_history VALUES
+    ('limma', '3.23', 'bioc', 'nebbiolo2', 'checksrc', 1, 'OK', NULL, NULL, NULL,
+     '2026-10-01', '2026-09-01', 1, NULL, NULL)"), "CHECK constraint failed")
+  expect_equal(DBI::dbGetQuery(con, "SELECT value FROM bioc_views_history
+                                     WHERE package = 'airway' AND ended_on IS NULL")$value,
+               "Deprecated")
+})
+
+test_that("the CRAN tarball table lands keyed by revision, WITHOUT ROWID and with its check", {
+  dir <- withr::local_tempdir()
+  write_db(file.path(dir, "cran-archive.db"), c(
+    "CREATE TABLE cran_archive (package TEXT PRIMARY KEY, archived_on TEXT)",
+    "INSERT INTO cran_archive VALUES ('behaviorchange', '2026-08-28')",
+    "CREATE TABLE cran_tarballs (
+       package TEXT NOT NULL, version TEXT NOT NULL, revision INTEGER NOT NULL,
+       size_bytes INTEGER NOT NULL, mtime TEXT NOT NULL, md5sum TEXT,
+       listing TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+       PRIMARY KEY (package, version, revision),
+       CHECK (last_seen >= first_seen)) WITHOUT ROWID",
+    # A version whose file was replaced keeps one row per file.
+    "INSERT INTO cran_tarballs VALUES
+       ('lmeInfo', '0.3.2', 1, 65124, '2023-03-07T09:10:11Z', NULL, 'gone',
+        '2026-10-01', '2026-10-01'),
+       ('lmeInfo', '0.3.2', 2, 65532, '2026-09-27T08:01:02Z',
+        '0f5c1c1a8e3c4b8a9d7e6f5a4b3c2d1e', 'current', '2026-10-01', '2026-10-01')"))
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  stats <- quiet_merge_sources(con, dir)[["cran-archive.db"]]
+
+  expect_equal(stats$status, "merged")
+  expect_equal(stats$tables$cran_tarballs, 2)
+  sql <- DBI::dbGetQuery(con, "SELECT sql FROM main.sqlite_master WHERE name = 'cran_tarballs'")$sql
+  expect_match(sql, "WITHOUT ROWID", fixed = TRUE)
+  info <- DBI::dbGetQuery(con, "PRAGMA main.table_info(cran_tarballs)")
+  key <- info[info$pk > 0, , drop = FALSE]
+  expect_equal(key$name[order(key$pk)], c("package", "version", "revision"))
+  expect_error(DBI::dbExecute(con, "INSERT INTO cran_tarballs VALUES
+    ('cli', '3.6.5', 1, 1000, '2026-10-01T00:00:00Z', NULL, 'current',
+     '2026-10-02', '2026-10-01')"), "CHECK constraint failed")
+  expect_equal(DBI::dbGetQuery(con, "SELECT MAX(revision) AS r FROM cran_tarballs
+                                     WHERE package = 'lmeInfo'")$r, 2)
+})
+
+test_that("the pull request tallies and rename episodes keep their keys and checks", {
+  dir <- withr::local_tempdir()
+  write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE, with_added = TRUE)
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  quiet_merge_sources(con, dir)
+
+  expect_error(DBI::dbExecute(con, "INSERT INTO vcs_pr_quarterly VALUES
+    ('github.com/r-lib/cli', '2026-Q4', 'MEMBER', 'User', 0, 1, 9)"), "UNIQUE")
+  expect_error(DBI::dbExecute(con, "INSERT INTO vcs_pr_quarterly VALUES
+    ('github.com/r-lib/cli', '2026-Q4', 'MEMBER', 'User', 2, 1, 1)"), "CHECK constraint failed")
+  expect_equal(DBI::dbGetQuery(con, "SELECT SUM(prs) AS n FROM vcs_pr_quarterly")$n, 5)
+  got <- DBI::dbGetQuery(con, "SELECT name_with_owner FROM vcs_repo_name_history
+                               WHERE ended_on IS NULL")
+  expect_equal(got$name_with_owner, "r-lib/log4r")
+  # The walk cursor is the producer's own state.
+  expect_false("vcs_ai_repo_reads" %in% output_tables(con))
+})
+
+test_that("queue.db brings the archive-folder episodes, read log and index", {
+  dir <- withr::local_tempdir()
+  write_db(file.path(dir, "queue.db"), c(
+    "CREATE TABLE queue_snapshots (snapshot_time TEXT, package TEXT, version TEXT, folder TEXT)",
+    "INSERT INTO queue_snapshots VALUES ('2026-10-01 00:49:55', 'polle', '1.6.5', 'pretest')",
+    "CREATE TABLE IF NOT EXISTS queue_archive_episodes (
+       package TEXT NOT NULL, version TEXT NOT NULL, mtime TEXT NOT NULL, size_kb REAL,
+       first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+       PRIMARY KEY (package, version, mtime)) WITHOUT ROWID",
+    "CREATE INDEX IF NOT EXISTS idx_qae_first_seen ON queue_archive_episodes(first_seen)",
+    # One version uploaded twice is two episodes.
+    "INSERT INTO queue_archive_episodes VALUES
+       ('acR', '1.2.0', '2026-09-29 00:42', 20, '2026-09-30 00:05:12', '2026-10-01 00:04:48'),
+       ('acR', '1.2.0', '2026-09-29 13:02', 2662.4, '2026-09-30 00:05:12', '2026-09-30 00:05:12')",
+    "CREATE TABLE IF NOT EXISTS queue_archive_reads (read_at TEXT PRIMARY KEY, listed INTEGER NOT NULL)",
+    "INSERT INTO queue_archive_reads VALUES ('2026-09-30 00:05:12', 292), ('2026-10-01 00:04:48', 297)"))
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  stats <- quiet_merge_sources(con, dir)[["queue.db"]]
+
+  expect_equal(stats$status, "merged")
+  expect_equal(unlist(stats$tables[c("queue_archive_episodes", "queue_archive_reads")]),
+               c(queue_archive_episodes = 2, queue_archive_reads = 2))
+  expect_match(DBI::dbGetQuery(con, "SELECT sql FROM main.sqlite_master
+                                     WHERE name = 'queue_archive_episodes'")$sql,
+               "WITHOUT ROWID", fixed = TRUE)
+  expect_equal(indexes_on(con, "queue_archive_episodes")$name, "idx_qae_first_seen")
+  expect_equal(index_columns(con, "idx_qae_first_seen"), "first_seen")
+})
+
+test_that("metadata.db brings the bounce episodes and flavor history with their keys and open-row index", {
+  dir <- withr::local_tempdir()
+  write_db(file.path(dir, "metadata.db"), c(
+    "CREATE TABLE cran_check_results (package TEXT, flavor TEXT, status TEXT,
+       version TEXT, flags TEXT)",
+    "INSERT INTO cran_check_results VALUES
+       ('bunsen', 'r-devel-linux-x86_64-debian-gcc', 'ERROR', '0.1.1', '--no-vignettes')",
+    "CREATE TABLE IF NOT EXISTS cran_maintainer_bounces (
+       package TEXT NOT NULL, episode_seq INTEGER NOT NULL, version TEXT,
+       onset_known INTEGER NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+       resolved_on TEXT, outcome TEXT, archived_on TEXT,
+       PRIMARY KEY (package, episode_seq),
+       CHECK (resolved_on IS NULL OR resolved_on <> ''),
+       CHECK ((resolved_on IS NULL) = (outcome IS NULL)),
+       CHECK (last_seen >= first_seen))",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_cran_maintainer_bounces_open
+       ON cran_maintainer_bounces(package) WHERE resolved_on IS NULL",
+    "INSERT INTO cran_maintainer_bounces VALUES
+       ('permRand', 1, '1.0.0', 0, '2026-10-01', '2026-10-03', '2026-10-04', 'vanished', NULL),
+       ('bunsen', 1, '0.1.1', 0, '2026-10-01', '2026-10-04', NULL, NULL, NULL)",
+    "CREATE TABLE cran_check_flavors (flavor_id INTEGER PRIMARY KEY, flavor TEXT NOT NULL UNIQUE)",
+    "INSERT INTO cran_check_flavors VALUES (1, 'r-devel-linux-x86_64-debian-gcc')",
+    "CREATE TABLE cran_check_flavor_status_history (
+       package TEXT NOT NULL, flavor_id INTEGER NOT NULL, episode_seq INTEGER NOT NULL,
+       status TEXT NOT NULL, flags TEXT, first_version TEXT, last_version TEXT,
+       first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, ended_on TEXT,
+       PRIMARY KEY (package, flavor_id, episode_seq)) WITHOUT ROWID",
+    "INSERT INTO cran_check_flavor_status_history VALUES
+       ('bunsen', 1, 1, 'ERROR', '--no-vignettes', '0.1.1', '0.1.1',
+        '2026-09-20', '2026-10-04', NULL)"))
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  stats <- quiet_merge_sources(con, dir)[["metadata.db"]]
+
+  expect_equal(stats$status, "merged")
+  expect_equal(unlist(stats$tables[c("cran_maintainer_bounces", "cran_check_flavors",
+                                     "cran_check_flavor_status_history")]),
+               c(cran_maintainer_bounces = 2, cran_check_flavors = 1,
+                 cran_check_flavor_status_history = 1))
+  ux <- indexes_on(con, "cran_maintainer_bounces")
+  expect_equal(ux$name, "ux_cran_maintainer_bounces_open")
+  expect_match(ux$sql, "WHERE resolved_on IS NULL", fixed = TRUE)
+  # A second open episode for bunsen is refused; permRand's is closed, so a new one opens.
+  expect_error(DBI::dbExecute(con, "INSERT INTO cran_maintainer_bounces VALUES
+    ('bunsen', 2, '0.1.1', 1, '2026-10-05', '2026-10-05', NULL, NULL, NULL)"), "UNIQUE")
+  expect_no_error(DBI::dbExecute(con, "INSERT INTO cran_maintainer_bounces VALUES
+    ('permRand', 2, '1.0.1', 1, '2026-10-05', '2026-10-05', NULL, NULL, NULL)"))
+  expect_error(DBI::dbExecute(con, "INSERT INTO cran_maintainer_bounces VALUES
+    ('cli', 1, '3.6.5', 1, '2026-10-05', '2026-10-05', '2026-10-06', NULL, NULL)"),
+    "CHECK constraint failed")
+  info <- DBI::dbGetQuery(con, "PRAGMA main.table_info(cran_check_flavor_status_history)")
+  key <- info[info$pk > 0, , drop = FALSE]
+  expect_equal(key$name[order(key$pk)], c("package", "flavor_id", "episode_seq"))
+})
+
+test_that("a table name is matched across sources without regard to case", {
+  dir <- withr::local_tempdir()
+  # The vcs columns under a name that differs only in case. SQLite treats the
+  # two as one table, so without the guard the vcs rows would join these.
+  write_db(file.path(dir, "queue.db"), c(
+    "CREATE TABLE Repo_Package_Links (repo_id TEXT NOT NULL, package TEXT NOT NULL,
+       origin TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+       PRIMARY KEY (repo_id, package, origin))",
+    "INSERT INTO Repo_Package_Links VALUES
+       ('github.com/q/qpkg', 'qpkg', 'cran', '2026-10-01', '2026-10-01')"))
+  write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE)
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  expect_warning(stats <- quiet_merge_sources(con, dir),
+                 "Error processing vcs-signals-summary.db")
+
+  expect_equal(stats[["queue.db"]]$status, "merged")
+  vcs <- stats[["vcs-signals-summary.db"]]
+  expect_equal(vcs$status, "error")
+  expect_equal(vcs$failed_tables[["repo_package_links"]],
+               "not copied, queue.db already brought a table named Repo_Package_Links")
+  expect_equal(DBI::dbGetQuery(con, "SELECT package FROM repo_package_links")$package, "qpkg")
+  expect_equal(vcs$tables$vcs_signals_summary, 2)
+})
+
+test_that("a refused table reddens the run through the gate and still publishes", {
+  source(file.path(getwd(), "..", "..", "merge_gate.R"), local = TRUE)
+  dir <- withr::local_tempdir()
+  write_db(file.path(dir, "queue.db"), "CREATE TABLE repo_package_links (repo_id TEXT)")
+  write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE)
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+  stats <- suppressWarnings(quiet_merge_sources(con, dir))
+  # merge.R and check-freshness.R pass the failures through this file.
+  path <- file.path(dir, ".merge-failed")
+  write_merge_failures(path, merge_failures(stats))
+
+  dbs <- c("queue.db", "vcs-signals-summary.db")
+  res <- evaluate_freshness_gate(
+    meta = data.frame(pipeline = c("cran-queue", "vcs-signals"),
+                      last_checked = "2026-10-01T09:00:00Z", last_changed = NA_character_,
+                      released_at = NA_character_, expected_max_age_hours = c(3L, 30L)),
+    present_dbs = dbs, all_source_dbs = dbs,
+    config = list(list(name = "cran-queue", max_age_h = 3L, db_filename = "queue.db"),
+                  list(name = "vcs-signals", max_age_h = 30L,
+                       db_filename = "vcs-signals-summary.db")),
+    now_iso = "2026-10-01T10:00:00Z", output_bytes = NA_real_,
+    merge_failed = read_merge_failures(path))
+
+  verdict <- stats::setNames(res$rows$verdict, res$rows$source)
+  expect_equal(verdict[["queue.db"]], "ok")
+  expect_equal(verdict[["vcs-signals-summary.db"]], "merge error")
+  expect_match(res$rows$detail[res$rows$source == "vcs-signals-summary.db"],
+               "queue.db already brought a table named repo_package_links", fixed = TRUE)
+  expect_true(res$run_failed)
+  expect_true(res$publish_allowed)
+})
+
+test_that("only an overlap listed for both sources lets them share a table name", {
+  dir <- withr::local_tempdir()
+  for (src in c("a", "b", "c")) {
+    write_db(file.path(dir, paste0(src, ".db")), c(
+      "CREATE TABLE shared_names (name TEXT PRIMARY KEY)",
+      sprintf("INSERT INTO shared_names VALUES ('from %s')", src)))
+  }
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  stats <- NULL
+  expect_warning(
+    utils::capture.output(stats <- merge_sources(
+      con, dir, dbs = c("a.db", "b.db", "c.db"),
+      tables = list("a.db" = NULL, "b.db" = NULL, "c.db" = NULL),
+      overlaps = list(Shared_Names = c("a.db", "b.db")))),
+    "Error processing c.db: table shared_names: not copied, a.db already brought")
+
+  expect_equal(vapply(stats, function(s) s$status, character(1)),
+               c(a.db = "merged", b.db = "merged", c.db = "error"))
+  expect_setequal(DBI::dbGetQuery(con, "SELECT name FROM shared_names")$name,
+                  c("from a", "from b"))
+})
+
+test_that("a table that fails to copy inside the source loop is still an error", {
+  dir <- withr::local_tempdir()
+  src <- write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE,
+                           with_added = TRUE)
+  # A row the owner-type check refuses, so vcs_repo_owner fails partway.
+  write_db(src, c("PRAGMA ignore_check_constraints = 1",
+                  "INSERT INTO vcs_repo_owner VALUES
+                     ('github.com/x/y', 'R_x', 'x', 'Bot', 'O_x', 'x/y', '2026-10-04')"))
+  write_task_views(file.path(dir, "cran-task-views.db"))
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  expect_warning(stats <- quiet_merge_sources(con, dir),
+                 "Error processing vcs-signals-summary.db.*vcs_repo_owner.*CHECK constraint failed")
+
+  vcs <- stats[["vcs-signals-summary.db"]]
+  expect_equal(vcs$status, "error")
+  expect_named(vcs$failed_tables, "vcs_repo_owner")
+  expect_match(merge_failures(stats)[["vcs-signals-summary.db"]],
+               "table vcs_repo_owner: .*CHECK constraint failed")
+  expect_equal(stats[["cran-task-views.db"]]$status, "merged")
 })

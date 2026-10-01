@@ -75,12 +75,12 @@ test_that("the name-authority tables are copied into observatory.db", {
   expect_true("bioc_names_all" %in% tables_to_merge_from("bioconductor-metadata.db", source_tables))
 })
 
-test_that("cran-archive exposes archive, events, name authority, history, and lineage", {
+test_that("cran-archive exposes archive, events, name authority, history, lineage and tarballs", {
   expect_true("cran-archive.db" %in% source_dbs)
   expect_equal(
     tables_to_merge_from("cran-archive.db", source_tables),
     c("cran_archive", "cran_archive_events", "cran_names_all", "cran_archive_history",
-      "cran_archive_lineage", "cran_archive_action_counts")
+      "cran_archive_lineage", "cran_archive_action_counts", "cran_tarballs")
   )
 })
 
@@ -98,7 +98,8 @@ test_that("vcs-signals is registered in both merger lists", {
       "vcs_ai_models", "vcs_ai_rule_inventory", "vcs_ai_silent_channels",
       "repo_package_links", "vcs_dev_tooling_rules",
       "vcs_ai_search_coverage", "vcs_ai_review_signals", "vcs_ai_outside_prs",
-      "vcs_ai_ruleset_history", "vcs_repo_owner")
+      "vcs_ai_ruleset_history", "vcs_repo_owner",
+      "vcs_pr_quarterly", "vcs_pr_coverage", "vcs_repo_name_history")
   )
 })
 
@@ -172,10 +173,35 @@ test_that("the per-version DESCRIPTION and release notes history stays in the pi
   expect_false("cran-release-text.db" %in% source_dbs)
 })
 
-test_that("the Bioconductor catalogue carries its vignette list", {
+test_that("the Bioconductor catalogue carries its vignette list and build and VIEWS episodes", {
   expect_equal(
     tables_to_merge_from("bioconductor-metadata.db", source_tables),
     c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges",
-      "bioc_names_all", "bioc_vignettes")
+      "bioc_names_all", "bioc_vignettes",
+      "bioc_build_reports", "bioc_build_status_history", "bioc_views_history")
   )
+})
+
+test_that("autoobs brings its run record and leaves the raw counters behind", {
+  # The run record tells an unaggregated day from a zero. The counters and the
+  # day ledger stay in the pipeline's own assets.
+  allow <- tables_to_merge_from("autoobs-downloads-summary.db", source_tables)
+  expect_equal(allow, c("autoobs_downloads_summary", "autoobs_runs"))
+  expect_false(any(c("autoobs_counters", "autoobs_days") %in% allow))
+})
+
+test_that("feed.db, metadata.db and queue.db stay whole sources", {
+  # Every table they publish is merged, so a new producer table such as
+  # queue_archive_episodes or cran_maintainer_bounces arrives with no edit
+  # here. An allowlist on one of them would drop whatever it forgot to name.
+  for (src in c("feed.db", "metadata.db", "queue.db")) {
+    expect_true(src %in% names(source_tables), info = src)
+    expect_null(tables_to_merge_from(src, source_tables), info = src)
+  }
+})
+
+test_that("no two sources are allowed to share a table name today", {
+  # v2026-09-30 carries 82 source tables and no name twice. A new overlap is a
+  # decision written into allowed_table_overlaps, never a surprise.
+  expect_equal(allowed_table_overlaps, list())
 })

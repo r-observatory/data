@@ -118,6 +118,8 @@ dbGetQuery(con, "
 - **check_status_history** — Append-only status change log (package, status, flavor_summary, details, detected_at)
 - **removal_reasons** — Archival reasons for removed packages (package, reason)
 - **package_news** — NEWS entries for recently-updated packages (package, version, news_text)
+- **cran_maintainer_bounces**: Episodes of CRAN's email to a package's maintainer bouncing (package, episode_seq, version, onset_known, first_seen, last_seen, resolved_on, outcome, archived_on). `onset_known = 0` marks an episode already open when recording began. Not in `observatory.db` until cran-metadata publishes it.
+- **cran_check_flavors**, **cran_check_flavor_status_history**: Each CRAN check flavor, and each package's check status and flags per flavor as episodes, with the checked version kept alongside. Not in `observatory.db` until cran-metadata publishes them.
 
 ### From `downloads.db` (cran-downloads)
 
@@ -127,6 +129,7 @@ dbGetQuery(con, "
 ### From `autoobs-downloads-summary.db` (autoobs-downloads)
 
 - **autoobs_downloads_summary** — Per-package openSUSE autoCRAN download stats (package, package_lower, id, total_1d, total_7d, total_30d, cnt_total, avg_daily_30d, rank_30d, rank_total, trend, autocran_only, first_seen, last_snapshot). `autocran_only = 1` marks names served only by autoCRAN (the count is exact); `0` means the name is also shipped elsewhere on openSUSE, so the name-aggregated count is a superset.
+- **autoobs_runs**: One row per autoobs-downloads run, heartbeats included: what was asked of MirrorCache and what came back, whether the day before had been aggregated upstream (`day_aggregated`), whether the counters kept from earlier runs loaded (`counters_prior`: `loaded`, `none` or `download_failed`), and whether this run's counters were saved (`counters_published`). A day MirrorCache had not aggregated reads differently from a day of zero downloads. Not in `observatory.db` until autoobs-downloads publishes it.
 
 ### From `copr-downloads-summary.db` (copr-downloads)
 
@@ -144,6 +147,8 @@ dbGetQuery(con, "
 
 - **queue_snapshots** — Point-in-time snapshots of CRAN incoming queue (snapshot_time, package, version, folder, howlong)
 - **queue_stats** — Monthly queue statistics by folder (month, folder, median_hours, p80_hours, p95_hours, total_packages)
+- **queue_archive_episodes**: Tarballs seen in CRAN's `incoming/archive/` folder, read once a day (package, version, mtime on CRAN's Europe/Vienna clock, size_kb, first_seen and last_seen in UTC). A `first_seen` equal to the earliest read is censored. Not in `observatory.db` until cran-queue publishes it.
+- **queue_archive_reads**: Each daily read of that folder and how many tarballs it listed, so a file that left the folder can be told from a day that was not read. Not in `observatory.db` until cran-queue publishes it.
 
 ### Generated at merge time
 
