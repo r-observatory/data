@@ -79,7 +79,10 @@ source_tables <- list(
   "bioconductor-summary.db"      = c("bioc_downloads_summary"),
   "queue.db"                     = NULL,
   # bioc_vignettes is the current release's vignette list, one row per file with its link.
-  "bioconductor-metadata.db"     = c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges", "bioc_names_all", "bioc_vignettes"),
+  # bioc_build_reports, bioc_build_status_history and bioc_views_history are the daily
+  # build report and VIEWS read as episodes; upstream keeps only the latest report.
+  "bioconductor-metadata.db"     = c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges", "bioc_names_all", "bioc_vignettes",
+                                     "bioc_build_reports", "bioc_build_status_history", "bioc_views_history"),
   "cran-archive.db"              = c("cran_archive", "cran_archive_events", "cran_names_all", "cran_archive_history", "cran_archive_lineage", "cran_archive_action_counts"),
   # Code tables only; dataset tables now live in the *-data-metrics.db sources.
   # The dataset row_sketch table is deliberately EXCLUDED: it is an offline

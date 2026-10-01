@@ -180,10 +180,57 @@ write_bioc_code_metrics <- function(path, with_text) {
   write_db(path, sql)
 }
 
-write_bioc_catalogue <- function(path, with_vignettes) {
+# The build report and VIEWS episode tables as bioconductor-metadata declares
+# them, with their open-row indexes. One DESeq2 check episode closed on a
+# changed status and the next one open; one deprecated package.
+bioc_build_sql <- c(
+  "CREATE TABLE bioc_build_reports (
+     bioc_version TEXT NOT NULL, repo TEXT NOT NULL, report_at TEXT NOT NULL,
+     branch TEXT NOT NULL, snapshot_at TEXT, generated_at TEXT,
+     published_at TEXT NOT NULL, status_sha256 TEXT NOT NULL,
+     n_packages INTEGER NOT NULL, n_lines INTEGER NOT NULL, n_na INTEGER NOT NULL,
+     nodes TEXT NOT NULL, read_at TEXT NOT NULL, outcome TEXT NOT NULL,
+     PRIMARY KEY (bioc_version, repo, report_at))",
+  "INSERT INTO bioc_build_reports VALUES
+     ('3.23', 'bioc', '2026-09-30T13:05:00Z', 'release', '2026-09-29T17:00:00Z',
+      '2026-09-30T13:05:00Z', '2026-09-30T13:07:12Z', 'ab12', 2361, 11805, 520,
+      'nebbiolo2,palomino8,kjohnson3', '2026-10-01T06:02:00Z', 'applied')",
+  "CREATE TABLE bioc_build_status_history (
+     package TEXT NOT NULL, bioc_version TEXT NOT NULL, repo TEXT NOT NULL,
+     node TEXT NOT NULL, stage TEXT NOT NULL, episode_seq INTEGER NOT NULL,
+     status TEXT NOT NULL, detail TEXT, first_version TEXT, last_version TEXT,
+     first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+     first_seen_exact INTEGER NOT NULL, ended_on TEXT, end_reason TEXT,
+     PRIMARY KEY (package, bioc_version, repo, node, stage, episode_seq),
+     CHECK ((ended_on IS NULL) = (end_reason IS NULL)),
+     CHECK (last_seen >= first_seen))",
+  "CREATE UNIQUE INDEX ux_bioc_build_open
+     ON bioc_build_status_history(package, bioc_version, repo, node, stage) WHERE ended_on IS NULL",
+  "CREATE INDEX idx_bioc_build_open_status
+     ON bioc_build_status_history(status) WHERE ended_on IS NULL",
+  "INSERT INTO bioc_build_status_history VALUES
+     ('DESeq2', '3.23', 'bioc', 'nebbiolo2', 'checksrc', 1, 'OK', NULL, '1.52.0', '1.52.1',
+      '2026-09-29T13:05:00Z', '2026-09-29T13:05:00Z', 0, '2026-09-30T13:05:00Z', 'changed'),
+     ('DESeq2', '3.23', 'bioc', 'nebbiolo2', 'checksrc', 2, 'WARNINGS', NULL, '1.52.1', '1.52.1',
+      '2026-09-30T13:05:00Z', '2026-09-30T13:05:00Z', 1, NULL, NULL)",
+  "CREATE TABLE bioc_views_history (
+     package TEXT NOT NULL, field TEXT NOT NULL, episode_seq INTEGER NOT NULL,
+     value TEXT NOT NULL, bioc_version TEXT NOT NULL, category TEXT NOT NULL,
+     first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+     first_seen_exact INTEGER NOT NULL, ended_on TEXT,
+     PRIMARY KEY (package, field, episode_seq),
+     CHECK (last_seen >= first_seen))",
+  "CREATE UNIQUE INDEX ux_bioc_views_open
+     ON bioc_views_history(package, field) WHERE ended_on IS NULL",
+  "INSERT INTO bioc_views_history VALUES
+     ('airway', 'PackageStatus', 1, 'Deprecated', '3.23', 'experiment',
+      '2026-09-30T11:20:00Z', '2026-09-30T11:20:00Z', 0, NULL)")
+
+write_bioc_catalogue <- function(path, with_vignettes, with_builds = FALSE) {
   sql <- c(
     "CREATE TABLE bioc_packages (package TEXT PRIMARY KEY, category TEXT)",
     "INSERT INTO bioc_packages VALUES ('DESeq2', 'software'), ('airway', 'experiment')")
+  if (with_builds) sql <- c(sql, bioc_build_sql)
   if (with_vignettes) sql <- c(sql,
     "CREATE TABLE bioc_vignettes (
        package TEXT NOT NULL, release TEXT NOT NULL, category TEXT NOT NULL,
@@ -762,4 +809,34 @@ test_that("the autoobs run record lands and the counters and day ledger stay beh
   expect_equal(got$outcome, c("ok", "heartbeat"))
   expect_equal(got$counters_prior, c("loaded", "download_failed"))
   expect_false(any(c("autoobs_counters", "autoobs_days") %in% output_tables(con)))
+})
+
+test_that("the Bioconductor build and VIEWS episodes land with their open-row indexes", {
+  dir <- withr::local_tempdir()
+  write_bioc_catalogue(file.path(dir, "bioconductor-metadata.db"), with_vignettes = TRUE,
+                       with_builds = TRUE)
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  stats <- quiet_merge_sources(con, dir)[["bioconductor-metadata.db"]]
+
+  expect_equal(stats$status, "merged")
+  expect_equal(unlist(stats$tables[c("bioc_build_reports", "bioc_build_status_history",
+                                     "bioc_views_history")]),
+               c(bioc_build_reports = 1, bioc_build_status_history = 2,
+                 bioc_views_history = 1))
+  idx <- rbind(indexes_on(con, "bioc_build_status_history"), indexes_on(con, "bioc_views_history"))
+  expect_setequal(idx$name, c("ux_bioc_build_open", "idx_bioc_build_open_status",
+                              "ux_bioc_views_open"))
+  expect_true(all(grepl("WHERE ended_on IS NULL", idx$sql, fixed = TRUE)))
+  # One open episode per package, node and stage.
+  expect_error(DBI::dbExecute(con, "INSERT INTO bioc_build_status_history VALUES
+    ('DESeq2', '3.23', 'bioc', 'nebbiolo2', 'checksrc', 3, 'ERROR', NULL, '1.52.1', '1.52.1',
+     '2026-10-01T13:05:00Z', '2026-10-01T13:05:00Z', 1, NULL, NULL)"), "UNIQUE")
+  expect_error(DBI::dbExecute(con, "INSERT INTO bioc_build_status_history VALUES
+    ('limma', '3.23', 'bioc', 'nebbiolo2', 'checksrc', 1, 'OK', NULL, NULL, NULL,
+     '2026-10-01', '2026-09-01', 1, NULL, NULL)"), "CHECK constraint failed")
+  expect_equal(DBI::dbGetQuery(con, "SELECT value FROM bioc_views_history
+                                     WHERE package = 'airway' AND ended_on IS NULL")$value,
+               "Deprecated")
 })
