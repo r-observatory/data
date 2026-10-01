@@ -1,0 +1,159 @@
+{
+ "description": "Real cran_check_results rows over eight days for the per-flavor status fold, with the episodes it must leave. Shared byte for byte by r-observatory/data and r-observatory/cran-metadata.",
+ "days": [
+  {
+   "on": "2026-09-01", "fetched": true, "fill_flags": false,
+   "note": "first snapshot, the stored table without version or flags",
+   "columns": ["package", "flavor", "status", "tinstall", "tcheck", "ttotal"],
+   "rows": [
+    ["cli", "r-devel-linux-x86_64-debian-clang", "OK", 19.75, 176.63, 196.38],
+    ["cli", "r-release-macos-arm64", "OK", 5.0, 51.0, 56.0],
+    ["cli", "r-release-windows-x86_64", "OK", 56.0, 204.0, 260.0],
+    ["lmeInfo", "r-devel-linux-x86_64-debian-clang", "OK", 2.75, 187.33, 190.08],
+    ["lmeInfo", "r-release-macos-arm64", "OK", 1.0, 61.0, 62.0],
+    ["lmeInfo", "r-release-windows-x86_64", "OK", 4.0, 215.0, 219.0],
+    ["polle", "r-devel-linux-x86_64-debian-clang", "ERROR", 15.03, 571.79, 586.82],
+    ["polle", "r-release-macos-arm64", "OK", 3.0, 121.0, 124.0],
+    ["polle", "r-release-windows-x86_64", "ERROR", 17.0, 464.0, 481.0],
+    ["RcppArmadillo", "r-devel-linux-x86_64-debian-clang", "NOTE", 37.84, 222.41, 260.25],
+    ["RcppArmadillo", "r-release-macos-arm64", "OK", 12.0, 86.0, 98.0],
+    ["RcppArmadillo", "r-release-windows-x86_64", "OK", 71.0, 286.0, 357.0]
+   ]
+  },
+  {
+   "on": "2026-09-02", "fetched": true, "fill_flags": false,
+   "note": "identical to the day before, as after a failed fetch",
+   "columns": ["package", "flavor", "status", "tinstall", "tcheck", "ttotal"],
+   "rows": [
+    ["cli", "r-devel-linux-x86_64-debian-clang", "OK", 19.75, 176.63, 196.38],
+    ["cli", "r-release-macos-arm64", "OK", 5.0, 51.0, 56.0],
+    ["cli", "r-release-windows-x86_64", "OK", 56.0, 204.0, 260.0],
+    ["lmeInfo", "r-devel-linux-x86_64-debian-clang", "OK", 2.75, 187.33, 190.08],
+    ["lmeInfo", "r-release-macos-arm64", "OK", 1.0, 61.0, 62.0],
+    ["lmeInfo", "r-release-windows-x86_64", "OK", 4.0, 215.0, 219.0],
+    ["polle", "r-devel-linux-x86_64-debian-clang", "ERROR", 15.03, 571.79, 586.82],
+    ["polle", "r-release-macos-arm64", "OK", 3.0, 121.0, 124.0],
+    ["polle", "r-release-windows-x86_64", "ERROR", 17.0, 464.0, 481.0],
+    ["RcppArmadillo", "r-devel-linux-x86_64-debian-clang", "NOTE", 37.84, 222.41, 260.25],
+    ["RcppArmadillo", "r-release-macos-arm64", "OK", 12.0, 86.0, 98.0],
+    ["RcppArmadillo", "r-release-windows-x86_64", "OK", 71.0, 286.0, 357.0]
+   ]
+  },
+  {
+   "on": "2026-09-03", "fetched": false, "fill_flags": false,
+   "note": "the fetch failed",
+   "columns": [],
+   "rows": []
+  },
+  {
+   "on": "2026-09-04", "fetched": true, "fill_flags": false,
+   "note": "RcppArmadillo turns OK on debian-clang, lmeInfo is missing on windows",
+   "columns": ["package", "flavor", "status", "tinstall", "tcheck", "ttotal"],
+   "rows": [
+    ["cli", "r-devel-linux-x86_64-debian-clang", "OK", 20.1, 180.2, 200.3],
+    ["cli", "r-release-macos-arm64", "OK", 5.0, 52.0, 57.0],
+    ["cli", "r-release-windows-x86_64", "OK", 55.0, 210.0, 265.0],
+    ["lmeInfo", "r-devel-linux-x86_64-debian-clang", "OK", 2.8, 190.0, 192.8],
+    ["lmeInfo", "r-release-macos-arm64", "OK", 1.0, 60.0, 61.0],
+    ["polle", "r-devel-linux-x86_64-debian-clang", "ERROR", 15.2, 570.0, 585.2],
+    ["polle", "r-release-macos-arm64", "OK", 3.0, 119.0, 122.0],
+    ["polle", "r-release-windows-x86_64", "ERROR", 16.0, 470.0, 486.0],
+    ["RcppArmadillo", "r-devel-linux-x86_64-debian-clang", "OK", 38.0, 220.0, 258.0],
+    ["RcppArmadillo", "r-release-macos-arm64", "OK", 12.0, 85.0, 97.0],
+    ["RcppArmadillo", "r-release-windows-x86_64", "OK", 70.0, 290.0, 360.0]
+   ]
+  },
+  {
+   "on": "2026-09-05", "fetched": true, "fill_flags": false,
+   "note": "under half the rows",
+   "columns": ["package", "flavor", "status", "tinstall", "tcheck", "ttotal"],
+   "rows": [
+    ["cli", "r-devel-linux-x86_64-debian-clang", "OK", 20.0, 181.0, 201.0],
+    ["cli", "r-release-macos-arm64", "OK", 5.0, 50.0, 55.0],
+    ["cli", "r-release-windows-x86_64", "OK", 57.0, 200.0, 257.0],
+    ["polle", "r-devel-linux-x86_64-debian-clang", "ERROR", 15.0, 572.0, 587.0],
+    ["polle", "r-release-macos-arm64", "OK", 3.0, 120.0, 123.0]
+   ]
+  },
+  {
+   "on": "2026-09-06", "fetched": true, "fill_flags": true,
+   "note": "CRAN_check_results() with version and flags for the first time; lmeInfo is back on windows",
+   "columns": ["Flavor", "Package", "Version", "Priority", "Maintainer", "Status", "Flags", "T_install", "T_check", "T_total"],
+   "rows": [
+    ["r-devel-linux-x86_64-debian-clang", "cli", "3.6.5", null, "Gabor Csardi <gabor@posit.co>", "OK", "", 19.9, 178.0, 197.9],
+    ["r-release-macos-arm64", "cli", "3.6.5", null, "Gabor Csardi <gabor@posit.co>", "OK", "", 5.0, 51.0, 56.0],
+    ["r-release-windows-x86_64", "cli", "3.6.5", null, "Gabor Csardi <gabor@posit.co>", "OK", "", 56.0, 205.0, 261.0],
+    ["r-devel-linux-x86_64-debian-clang", "lmeInfo", "0.3.2", null, "James Pustejovsky <jepusto@gmail.com>", "OK", "", 2.7, 188.0, 190.7],
+    ["r-release-macos-arm64", "lmeInfo", "0.3.2", null, "James Pustejovsky <jepusto@gmail.com>", "OK", "", 1.0, 62.0, 63.0],
+    ["r-release-windows-x86_64", "lmeInfo", "0.3.2", null, "James Pustejovsky <jepusto@gmail.com>", "OK", "", 4.0, 216.0, 220.0],
+    ["r-devel-linux-x86_64-debian-clang", "polle", "1.6.4", null, "Andreas Nordland <andreasnordland@gmail.com>", "ERROR", "--no-vignettes", 15.1, 560.0, 575.1],
+    ["r-release-macos-arm64", "polle", "1.6.4", null, "Andreas Nordland <andreasnordland@gmail.com>", "OK", "", 3.0, 122.0, 125.0],
+    ["r-release-windows-x86_64", "polle", "1.6.4", null, "Andreas Nordland <andreasnordland@gmail.com>", "ERROR", "", 17.0, 468.0, 485.0],
+    ["r-devel-linux-x86_64-debian-clang", "RcppArmadillo", "15.0.2-1", null, "Dirk Eddelbuettel <edd@debian.org>", "OK", "", 37.5, 221.0, 258.5],
+    ["r-release-macos-arm64", "RcppArmadillo", "15.0.2-1", null, "Dirk Eddelbuettel <edd@debian.org>", "OK", "", 12.0, 87.0, 99.0],
+    ["r-release-windows-x86_64", "RcppArmadillo", "15.0.2-1", null, "Dirk Eddelbuettel <edd@debian.org>", "OK", "", 71.0, 288.0, 359.0]
+   ]
+  },
+  {
+   "on": "2026-09-07", "fetched": true, "fill_flags": false,
+   "note": "polle 1.6.5, polle drops --no-vignettes on debian-clang, cli appears on a new flavor",
+   "columns": ["Flavor", "Package", "Version", "Priority", "Maintainer", "Status", "Flags", "T_install", "T_check", "T_total"],
+   "rows": [
+    ["r-devel-linux-x86_64-debian-clang", "cli", "3.6.5", null, "Gabor Csardi <gabor@posit.co>", "OK", "", 19.8, 177.0, 196.8],
+    ["r-release-macos-arm64", "cli", "3.6.5", null, "Gabor Csardi <gabor@posit.co>", "OK", "", 5.0, 50.0, 55.0],
+    ["r-release-windows-x86_64", "cli", "3.6.5", null, "Gabor Csardi <gabor@posit.co>", "OK", "", 56.0, 203.0, 259.0],
+    ["r-oldrel-macos-arm64", "cli", "3.6.5", null, "Gabor Csardi <gabor@posit.co>", "OK", "", 5.0, 60.0, 65.0],
+    ["r-devel-linux-x86_64-debian-clang", "lmeInfo", "0.3.2", null, "James Pustejovsky <jepusto@gmail.com>", "OK", "", 2.8, 187.0, 189.8],
+    ["r-release-macos-arm64", "lmeInfo", "0.3.2", null, "James Pustejovsky <jepusto@gmail.com>", "OK", "", 1.0, 61.0, 62.0],
+    ["r-release-windows-x86_64", "lmeInfo", "0.3.2", null, "James Pustejovsky <jepusto@gmail.com>", "OK", "", 4.0, 214.0, 218.0],
+    ["r-devel-linux-x86_64-debian-clang", "polle", "1.6.5", null, "Andreas Nordland <andreasnordland@gmail.com>", "ERROR", null, 15.0, 565.0, 580.0],
+    ["r-release-macos-arm64", "polle", "1.6.5", null, "Andreas Nordland <andreasnordland@gmail.com>", "OK", "", 3.0, 121.0, 124.0],
+    ["r-release-windows-x86_64", "polle", "1.6.5", null, "Andreas Nordland <andreasnordland@gmail.com>", "ERROR", "", 17.0, 466.0, 483.0],
+    ["r-devel-linux-x86_64-debian-clang", "RcppArmadillo", "15.0.2-1", null, "Dirk Eddelbuettel <edd@debian.org>", "OK", "", 37.6, 222.0, 259.6],
+    ["r-release-macos-arm64", "RcppArmadillo", "15.0.2-1", null, "Dirk Eddelbuettel <edd@debian.org>", "OK", "", 12.0, 86.0, 98.0],
+    ["r-release-windows-x86_64", "RcppArmadillo", "15.0.2-1", null, "Dirk Eddelbuettel <edd@debian.org>", "OK", "", 70.0, 287.0, 357.0]
+   ]
+  },
+  {
+   "on": "2026-09-08", "fetched": true, "fill_flags": false,
+   "note": "polle turns OK on windows, RcppArmadillo is gone",
+   "columns": ["Flavor", "Package", "Version", "Priority", "Maintainer", "Status", "Flags", "T_install", "T_check", "T_total"],
+   "rows": [
+    ["r-devel-linux-x86_64-debian-clang", "cli", "3.6.5", null, "Gabor Csardi <gabor@posit.co>", "OK", "", 19.7, 176.0, 195.7],
+    ["r-release-macos-arm64", "cli", "3.6.5", null, "Gabor Csardi <gabor@posit.co>", "OK", "", 5.0, 51.0, 56.0],
+    ["r-release-windows-x86_64", "cli", "3.6.5", null, "Gabor Csardi <gabor@posit.co>", "OK", "", 56.0, 204.0, 260.0],
+    ["r-oldrel-macos-arm64", "cli", "3.6.5", null, "Gabor Csardi <gabor@posit.co>", "OK", "", 5.0, 61.0, 66.0],
+    ["r-devel-linux-x86_64-debian-clang", "lmeInfo", "0.3.2", null, "James Pustejovsky <jepusto@gmail.com>", "OK", "", 2.7, 186.0, 188.7],
+    ["r-release-macos-arm64", "lmeInfo", "0.3.2", null, "James Pustejovsky <jepusto@gmail.com>", "OK", "", 1.0, 60.0, 61.0],
+    ["r-release-windows-x86_64", "lmeInfo", "0.3.2", null, "James Pustejovsky <jepusto@gmail.com>", "OK", "", 4.0, 213.0, 217.0],
+    ["r-devel-linux-x86_64-debian-clang", "polle", "1.6.5", null, "Andreas Nordland <andreasnordland@gmail.com>", "ERROR", "", 15.1, 566.0, 581.1],
+    ["r-release-macos-arm64", "polle", "1.6.5", null, "Andreas Nordland <andreasnordland@gmail.com>", "OK", "", 3.0, 120.0, 123.0],
+    ["r-release-windows-x86_64", "polle", "1.6.5", null, "Andreas Nordland <andreasnordland@gmail.com>", "OK", "", 16.0, 300.0, 316.0]
+   ]
+  }
+ ],
+ "expected": {
+  "outcomes": ["applied", "stale", "stale", "applied", "unhealthy", "applied", "applied", "applied"],
+  "flavors": [[1, "r-devel-linux-x86_64-debian-clang"], [2, "r-release-macos-arm64"], [3, "r-release-windows-x86_64"], [4, "r-oldrel-macos-arm64"]],
+  "episode_columns": ["package", "flavor_id", "episode_seq", "status", "flags", "first_version", "last_version", "first_seen", "last_seen", "ended_on"],
+  "episodes": [
+   ["RcppArmadillo", 1, 1, "NOTE", null, null, null, "2026-09-01", "2026-09-01", "2026-09-04"],
+   ["RcppArmadillo", 1, 2, "OK", null, null, "15.0.2-1", "2026-09-04", "2026-09-07", "2026-09-08"],
+   ["RcppArmadillo", 2, 1, "OK", null, null, "15.0.2-1", "2026-09-01", "2026-09-07", "2026-09-08"],
+   ["RcppArmadillo", 3, 1, "OK", null, null, "15.0.2-1", "2026-09-01", "2026-09-07", "2026-09-08"],
+   ["cli", 1, 1, "OK", null, null, "3.6.5", "2026-09-01", "2026-09-08", null],
+   ["cli", 2, 1, "OK", null, null, "3.6.5", "2026-09-01", "2026-09-08", null],
+   ["cli", 3, 1, "OK", null, null, "3.6.5", "2026-09-01", "2026-09-08", null],
+   ["cli", 4, 1, "OK", null, "3.6.5", "3.6.5", "2026-09-07", "2026-09-08", null],
+   ["lmeInfo", 1, 1, "OK", null, null, "0.3.2", "2026-09-01", "2026-09-08", null],
+   ["lmeInfo", 2, 1, "OK", null, null, "0.3.2", "2026-09-01", "2026-09-08", null],
+   ["lmeInfo", 3, 1, "OK", null, null, null, "2026-09-01", "2026-09-01", "2026-09-04"],
+   ["lmeInfo", 3, 2, "OK", null, "0.3.2", "0.3.2", "2026-09-06", "2026-09-08", null],
+   ["polle", 1, 1, "ERROR", "--no-vignettes", null, "1.6.4", "2026-09-01", "2026-09-06", "2026-09-07"],
+   ["polle", 1, 2, "ERROR", null, "1.6.5", "1.6.5", "2026-09-07", "2026-09-08", null],
+   ["polle", 2, 1, "OK", null, null, "1.6.5", "2026-09-01", "2026-09-08", null],
+   ["polle", 3, 1, "ERROR", null, null, "1.6.5", "2026-09-01", "2026-09-07", "2026-09-08"],
+   ["polle", 3, 2, "OK", null, "1.6.5", "1.6.5", "2026-09-08", "2026-09-08", null]
+  ]
+ }
+}
