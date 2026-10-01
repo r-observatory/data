@@ -534,3 +534,37 @@ missing_expected_tables <- function(source_present, expected, present_tables) {
   if (!isTRUE(source_present)) return(character(0))
   setdiff(expected, present_tables)
 }
+
+#' Give every removal event in package_versions CRAN's own reason: the one from
+#' the cran_archive_history episode archived nearest the event, within
+#' `window_days` days, whose reason is not blank. The feed can see a package
+#' leave a few days before CRAN dates the archiving. An event with no such
+#' episode keeps what cran-feed wrote, so no reason is ever replaced by NULL.
+#'
+#' @return the number of events updated; 0 when either table is absent.
+enrich_removal_reasons <- function(con, window_days = 7L) {
+  has <- function(tbl) {
+    nrow(DBI::dbGetQuery(con, "SELECT 1 FROM main.sqlite_master
+                               WHERE type = 'table' AND name = ?", params = list(tbl))) > 0
+  }
+  if (!has("package_versions") || !has("cran_archive_history")) return(0L)
+
+  # Days apart, by date. julianday() of a date that does not parse is NULL, and
+  # a NULL distance matches nothing. TRIM with an explicit set, because its
+  # one-argument form strips spaces only.
+  gap <- "ABS(julianday(substr(h.archived_on, 1, 10)) -
+              julianday(substr(package_versions.detected_at, 1, 10)))"
+  near <- sprintf("h.package = package_versions.package
+    AND TRIM(COALESCE(h.removal_reason, ''), ' ' || char(9, 10, 11, 12, 13)) <> ''
+    AND %s <= :window", gap)
+  n <- DBI::dbExecute(con, sprintf(
+    "UPDATE package_versions SET removal_reason = (
+       SELECT h.removal_reason FROM cran_archive_history h
+        WHERE %s
+        ORDER BY %s, h.episode_seq DESC
+        LIMIT 1)
+      WHERE event_type = 'removed'
+        AND EXISTS (SELECT 1 FROM cran_archive_history h WHERE %s)",
+    near, gap, near), params = list(window = as.integer(window_days)))
+  as.integer(n)
+}

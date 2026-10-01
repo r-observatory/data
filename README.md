@@ -105,7 +105,7 @@ dbGetQuery(con, "
 ### From `feed.db` (cran-feed)
 
 - **packages** — Current CRAN packages (name, version, title, description, maintainer, license, depends, imports, suggests, published, etc.)
-- **package_versions** — Append-only version history (package, version, event_type, previous_version, removal_reason, detected_at)
+- **package_versions**: Append-only version history (package, version, event_type, previous_version, removal_reason, detected_at). A removal's `removal_reason` is CRAN's own, from the `cran_archive_history` episode archived nearest the removal within 7 days; with no such episode it stays "no longer on CRAN".
 - **reverse_dependencies** — Reverse dependency relationships (package, rev_package, type)
 
 ### From `metadata.db` (cran-metadata)

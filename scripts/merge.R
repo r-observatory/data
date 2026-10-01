@@ -209,37 +209,11 @@ cat("--- Enriching packages ---\n")
 cat("\n")
 
 # ---------------------------------------------------------------------------
-# Enrich package_versions with removal_reasons
+# Give removal events CRAN's own reason from cran_archive_history
 # ---------------------------------------------------------------------------
 cat("--- Enriching package_versions with removal reasons ---\n")
-  has_versions <- dbGetQuery(con,
-    "SELECT COUNT(*) AS n FROM sqlite_master
-     WHERE type = 'table' AND name = 'package_versions'"
-  )$n > 0
-
-  has_removal <- dbGetQuery(con,
-    "SELECT COUNT(*) AS n FROM sqlite_master
-     WHERE type = 'table' AND name = 'removal_reasons'"
-  )$n > 0
-
-  if (has_versions && has_removal) {
-    n_updated <- dbExecute(con, "
-      UPDATE package_versions SET removal_reason = (
-        SELECT reason FROM removal_reasons
-        WHERE removal_reasons.package = package_versions.package
-      )
-      WHERE id = (
-        SELECT id FROM package_versions pv2
-        WHERE pv2.package = package_versions.package
-          AND pv2.event_type = 'removed'
-        ORDER BY pv2.detected_at DESC LIMIT 1
-      )
-      AND event_type = 'removed'
-    ")
-    cat("  Updated removal reasons for", n_updated, "packages\n")
-  } else {
-    cat("  Skipped: required tables not found\n")
-  }
+  n_updated <- enrich_removal_reasons(con)
+  cat("  Gave", n_updated, "removal events CRAN's archive reason\n")
 
   dbExecute(con, "COMMIT")
 }, error = function(e) {
