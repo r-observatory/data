@@ -109,10 +109,10 @@ max_data_through <- function(shards) {
 
 #' Latest data date from a manifest. What the producer declares wins: a
 #' top-level data_through, as a string or as {"monthly": "YYYY-MM"}, then
-#' summary$data_through, then the newest date_max in its shard map. A value of
-#' any other shape is passed over, never trusted, since about 16 repositories
-#' write these manifests. `[[` rather than `$`, which would take a longer key
-#' that merely starts with the name.
+#' summary$data_through, then the newest date_max in its shard map. A declared
+#' or summary value of any other shape is passed over, never trusted, since
+#' about 16 repositories write these manifests. `[[` rather than `$`, which
+#' would take a longer key that merely starts with the name.
 manifest_data_through <- function(man) {
   declared <- if (is.list(man)) man[["data_through"]]
   if (is.list(declared)) declared <- declared[["monthly"]]
