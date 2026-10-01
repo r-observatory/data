@@ -840,3 +840,39 @@ test_that("the Bioconductor build and VIEWS episodes land with their open-row in
                                      WHERE package = 'airway' AND ended_on IS NULL")$value,
                "Deprecated")
 })
+
+test_that("the CRAN tarball table lands keyed by revision, WITHOUT ROWID and with its check", {
+  dir <- withr::local_tempdir()
+  write_db(file.path(dir, "cran-archive.db"), c(
+    "CREATE TABLE cran_archive (package TEXT PRIMARY KEY, archived_on TEXT)",
+    "INSERT INTO cran_archive VALUES ('behaviorchange', '2026-08-28')",
+    "CREATE TABLE cran_tarballs (
+       package TEXT NOT NULL, version TEXT NOT NULL, revision INTEGER NOT NULL,
+       size_bytes INTEGER NOT NULL, mtime TEXT NOT NULL, md5sum TEXT,
+       listing TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+       PRIMARY KEY (package, version, revision),
+       CHECK (last_seen >= first_seen)) WITHOUT ROWID",
+    # A version whose file was replaced keeps one row per file.
+    "INSERT INTO cran_tarballs VALUES
+       ('lmeInfo', '0.3.2', 1, 65124, '2023-03-07T09:10:11Z', NULL, 'gone',
+        '2026-10-01', '2026-10-01'),
+       ('lmeInfo', '0.3.2', 2, 65532, '2026-09-27T08:01:02Z',
+        '0f5c1c1a8e3c4b8a9d7e6f5a4b3c2d1e', 'current', '2026-10-01', '2026-10-01')"))
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  stats <- quiet_merge_sources(con, dir)[["cran-archive.db"]]
+
+  expect_equal(stats$status, "merged")
+  expect_equal(stats$tables$cran_tarballs, 2)
+  sql <- DBI::dbGetQuery(con, "SELECT sql FROM main.sqlite_master WHERE name = 'cran_tarballs'")$sql
+  expect_match(sql, "WITHOUT ROWID", fixed = TRUE)
+  info <- DBI::dbGetQuery(con, "PRAGMA main.table_info(cran_tarballs)")
+  key <- info[info$pk > 0, , drop = FALSE]
+  expect_equal(key$name[order(key$pk)], c("package", "version", "revision"))
+  expect_error(DBI::dbExecute(con, "INSERT INTO cran_tarballs VALUES
+    ('cli', '3.6.5', 1, 1000, '2026-10-01T00:00:00Z', NULL, 'current',
+     '2026-10-02', '2026-10-01')"), "CHECK constraint failed")
+  expect_equal(DBI::dbGetQuery(con, "SELECT MAX(revision) AS r FROM cran_tarballs
+                                     WHERE package = 'lmeInfo'")$r, 2)
+})

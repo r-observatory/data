@@ -83,7 +83,9 @@ source_tables <- list(
   # build report and VIEWS read as episodes; upstream keeps only the latest report.
   "bioconductor-metadata.db"     = c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges", "bioc_names_all", "bioc_vignettes",
                                      "bioc_build_reports", "bioc_build_status_history", "bioc_views_history"),
-  "cran-archive.db"              = c("cran_archive", "cran_archive_events", "cran_names_all", "cran_archive_history", "cran_archive_lineage", "cran_archive_action_counts"),
+  # cran_tarballs is the exact size, mtime and MD5 of every CRAN source tarball,
+  # one row per file, so a same-version re-upload is its own revision.
+  "cran-archive.db"              = c("cran_archive", "cran_archive_events", "cran_names_all", "cran_archive_history", "cran_archive_lineage", "cran_archive_action_counts", "cran_tarballs"),
   # Code tables only; dataset tables now live in the *-data-metrics.db sources.
   # The dataset row_sketch table is deliberately EXCLUDED: it is an offline
   # near-duplicate structure that the viewer never queries, so it stays in the
