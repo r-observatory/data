@@ -155,6 +155,15 @@ dbGetQuery(con, "
 - **packages_fts** — FTS5 full-text search index over `packages` (name, title, description, maintainer). Uses porter stemming and unicode61 tokenization.
 - **pipeline_metadata**: One row per pipeline for the freshness page: schedule, release, when it last ran and last changed, and `data_through`. `data_through` is the value the producer declares (a day, or a month as `YYYY-MM` for a monthly source such as Bioconductor downloads), else its summary value, else the newest day its shards hold.
 
+## History release
+
+The prerelease `history` holds small series folded out of the dated `metadata.db` and `observatory.db` releases, kept as episodes: a value held from `first_seen` to `last_seen`, and `ended_on` is the first snapshot where it no longer held, so a change happened after `last_seen` and by `ended_on`. The release is never marked Latest, and its assets are added, never replaced or deleted.
+
+- `history-YYYY-MM-DD.db.zst` holds every series, per-flavor check status and check timings included, with `history-YYYY-MM-DD-manifest.json` (sha256, rows per table, and the first and last release folded from each source).
+- `history-merge-YYYY-MM-DD.db.zst` holds only the tables observatory.db may merge (check issues, deadline moves, pipeline freshness, the conda-forge, bioconda and Bioconductor download summaries, and the list of releases read), with its own manifest.
+
+The code is in `scripts/history/`: `extract.R` folds new dated releases into a local `history.db`, `assets.R` builds and checks both pairs, and `publish.R` uploads them.
+
 ## Feedback
 
 Found a bug, a wrong number, or a missing package? Report it at [r-observatory/feedback](https://github.com/r-observatory/feedback/issues/new/choose). All feedback about R Observatory, the site, the data, and the pipelines, is tracked in one place.
