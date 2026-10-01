@@ -39,7 +39,8 @@ tables_to_merge_from <- function(source_name, config) {
 # ---------------------------------------------------------------------------
 # Source databases to merge, in order.
 # source_tables: NULL means "merge all tables"; a character vector means
-# "merge only these tables".
+# "merge only these tables". A listed table the source does not have yet
+# copies nothing, so some are named here before their pipeline publishes them.
 # ---------------------------------------------------------------------------
 source_dbs <- c(
   "feed.db",
@@ -66,8 +67,8 @@ source_dbs <- c(
 
 source_tables <- list(
   "feed.db"                      = NULL,
-  # Whole source. Its state tables include check_status_history, cran_check_deadlines,
-  # cran_maintainer_bounces, cran_check_flavors and cran_check_flavor_status_history.
+  # Whole source. cran_maintainer_bounces, cran_check_flavors and
+  # cran_check_flavor_status_history arrive once cran-metadata publishes them.
   "metadata.db"                  = NULL,
   "downloads-summary.db"         = c("downloads_summary"),
   "r2u-summary.db"               = c("r2u_downloads_summary"),
@@ -79,16 +80,17 @@ source_tables <- list(
   "bioconda-downloads-summary.db"    = c("bioconda_downloads_summary"),
   "c2d4u-downloads-summary.db"    = c("c2d4u_downloads_summary"),
   "bioconductor-summary.db"      = c("bioc_downloads_summary"),
-  # Whole source, including queue_archive_episodes and queue_archive_reads (the
-  # daily read of CRAN's incoming/archive folder).
+  # Whole source. queue_archive_episodes and queue_archive_reads (the daily read of
+  # CRAN's incoming/archive folder) arrive once cran-queue publishes them.
   "queue.db"                     = NULL,
   # bioc_vignettes is the current release's vignette list, one row per file with its link.
   # bioc_build_reports, bioc_build_status_history and bioc_views_history are the daily
   # build report and VIEWS read as episodes; upstream keeps only the latest report.
   "bioconductor-metadata.db"     = c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges", "bioc_names_all", "bioc_vignettes",
                                      "bioc_build_reports", "bioc_build_status_history", "bioc_views_history"),
-  # cran_tarballs is the exact size, mtime and MD5 of every CRAN source tarball,
-  # one row per file, so a same-version re-upload is its own revision.
+  # cran_tarballs is one row per CRAN source tarball file with its exact size and
+  # mtime, so a same-version re-upload is its own revision. The MD5 is filled only
+  # for a file seen while it was current.
   "cran-archive.db"              = c("cran_archive", "cran_archive_events", "cran_names_all", "cran_archive_history", "cran_archive_lineage", "cran_archive_action_counts", "cran_tarballs"),
   # Code tables only; dataset tables now live in the *-data-metrics.db sources.
   # The dataset row_sketch table is deliberately EXCLUDED: it is an offline
