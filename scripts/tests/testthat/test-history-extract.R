@@ -53,3 +53,58 @@ test_that("a release for a day already folded is superseded, never folded out of
   expect_equal(plan$action, c("superseded", "process"))
   expect_equal(plan$note[1], "published after 2026-09-28 was folded")
 })
+
+test_that("a download is checked against the release and retried", {
+  dir <- withr::local_tempdir()
+  path <- metadata_snapshot(dir, "m1.db", c("OK", "OK", "ERROR", "OK"))
+  io <- fake_io(releases("v20260901-060000", "2026-09-01T06:00:00Z"),
+                list("v20260901-060000" = path), fail = list("v20260901-060000" = 1L))
+  got <- fetch_snapshot(io, families$`cran-metadata`, "v20260901-060000", file.path(dir, "w"), 20)
+  expect_equal(unname(tools::md5sum(got$path)), unname(tools::md5sum(path)))
+  expect_equal(got$sha256, history_file_sha256(path))
+  expect_equal(io$state$sleeps, 15)
+})
+
+test_that("a download that never matches its digest stops the run", {
+  dir <- withr::local_tempdir()
+  path <- metadata_snapshot(dir, "m1.db", c("OK", "OK", "ERROR", "OK"))
+  io <- fake_io(releases("v20260901-060000", "2026-09-01T06:00:00Z"),
+                list("v20260901-060000" = path))
+  io$asset_info <- function(repo, tag) data.frame(name = "metadata.db", size = file.size(path),
+    digest = "sha256:00", state = "uploaded", stringsAsFactors = FALSE)
+  expect_error(fetch_snapshot(io, families$`cran-metadata`, "v20260901-060000", dir, 20),
+               "sha256 differs.*--give-up=cran-metadata:v20260901-060000")
+  expect_equal(io$state$sleeps, c(15, 60))
+})
+
+test_that("a .zst asset is expanded and removed", {
+  skip_if(!nzchar(Sys.which("zstd")), "zstd is not available")
+  dir <- withr::local_tempdir()
+  path <- metadata_snapshot(dir, "m1.db", c("OK", "OK", "ERROR", "OK"))
+  system2("zstd", c("-q", "-f", shQuote(path), "-o", shQuote(paste0(path, ".zst"))))
+  io <- fake_io(releases("v20260901-060000", "2026-09-01T06:00:00Z"),
+                list("v20260901-060000" = paste0(path, ".zst")), asset = "metadata.db.zst")
+  got <- fetch_snapshot(io, families$`cran-metadata`, "v20260901-060000", file.path(dir, "w"), 20)
+  expect_equal(basename(got$path), "metadata.db")
+  expect_false(file.exists(paste0(got$path, ".zst")))
+  expect_equal(unname(tools::md5sum(got$path)), unname(tools::md5sum(path)))
+})
+
+test_that("the run stops before a download that would cross the free-space floor", {
+  dir <- withr::local_tempdir()
+  path <- metadata_snapshot(dir, "m1.db", c("OK", "OK", "ERROR", "OK"))
+  io <- fake_io(releases("v20260901-060000", "2026-09-01T06:00:00Z"),
+                list("v20260901-060000" = path), free = 20.000001)
+  expect_error(fetch_snapshot(io, families$`cran-metadata`, "v20260901-060000", dir, 20),
+               "free some space")
+  expect_length(io$state$downloads, 0L)
+})
+
+test_that("a snapshot path a file: URI would misread is refused", {
+  dir <- withr::local_tempdir()
+  odd <- file.path(dir, "a?b")
+  dir.create(odd)
+  path <- metadata_snapshot(odd, "m.db", c("OK", "OK", "OK", "OK"))
+  con <- history_test_db()
+  expect_error(attach_snapshot(con, path), "file: URI")
+})

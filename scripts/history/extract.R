@@ -118,3 +118,77 @@ plan_family_snapshots <- function(listing, family, recorded, today) {
   rownames(l) <- NULL
   l
 }
+
+HISTORY_DOWNLOAD_WAITS <- c(15, 60)
+
+# Downloads a tag's database asset, checks its size and sha256 against the
+# release, expands a .zst, and returns list(path, asset, bytes, sha256). Stops
+# before downloading when free space would fall under the floor.
+fetch_snapshot <- function(io, family, tag, workdir, min_free_gib) {
+  assets <- io$asset_info(family$repo, tag)
+  ready <- assets[assets$state == "uploaded", , drop = FALSE]
+  pick <- family$assets[family$assets %in% ready$name][1]
+  if (is.na(pick)) {
+    stop(sprintf("%s@%s has no uploaded %s; record it with --give-up=%s:%s",
+                 family$repo, tag, paste(family$assets, collapse = " or "),
+                 family$name, tag), call. = FALSE)
+  }
+  row <- ready[ready$name == pick, , drop = FALSE][1, ]
+  zst <- grepl("\\.zst$", pick)
+  need <- row$size * (if (zst) 8 else 1) / 1024^3
+  free <- io$free_gib(workdir)
+  if (free - need < min_free_gib) {
+    stop(sprintf(paste("stopping before %s@%s: %.1f GiB free, it needs about %.1f GiB",
+                       "and the floor is %s GiB; free some space and re-run"),
+                 family$repo, tag, free, need, min_free_gib), call. = FALSE)
+  }
+  digest <- sub("^sha256:", "", tolower(row$digest %||% NA_character_))
+  dir <- file.path(workdir, "snapshot")
+  problem <- NA_character_
+  for (attempt in 1:3) {
+    unlink(dir, recursive = TRUE)
+    dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+    path <- file.path(dir, pick)
+    got_sha <- NA_character_
+    problem <- if (!isTRUE(io$download(family$repo, tag, pick, dir))) "the download failed"
+      else if (!file.exists(path)) "no file arrived"
+      else if (file.size(path) != row$size) sprintf("%.0f bytes, the release says %.0f",
+                                                    file.size(path), row$size)
+      else NA_character_
+    if (is.na(problem)) {
+      got_sha <- history_file_sha256(path)
+      if (!is.na(digest) && nzchar(digest) && !identical(got_sha, digest)) {
+        problem <- "its sha256 differs from the release's digest"
+      }
+    }
+    if (is.na(problem) && zst) {
+      db <- sub("\\.zst$", "", path)
+      if (!isTRUE(io$unzstd(path, db))) problem <- "it did not decompress"
+      unlink(path)
+      path <- db
+    }
+    if (is.na(problem)) {
+      return(list(path = path, asset = pick, bytes = row$size, sha256 = got_sha))
+    }
+    if (attempt < 3L) io$sleep(HISTORY_DOWNLOAD_WAITS[attempt])
+  }
+  unlink(dir, recursive = TRUE)
+  stop(sprintf("could not read %s from %s@%s after 3 attempts (%s); re-run, or record it with --give-up=%s:%s",
+               pick, family$repo, tag, problem, family$name, tag), call. = FALSE)
+}
+
+attach_snapshot <- function(con, path) {
+  full <- normalizePath(path, mustWork = TRUE)
+  if (!grepl("^[A-Za-z0-9/._-]+$", full)) {
+    stop("snapshot path has characters a file: URI would misread: ", full, call. = FALSE)
+  }
+  DBI::dbExecute(con, "ATTACH DATABASE ? AS snap",
+                 params = list(paste0("file:", full, "?mode=ro&immutable=1")))
+  invisible(NULL)
+}
+
+detach_snapshot <- function(con) {
+  attached <- DBI::dbGetQuery(con, "PRAGMA database_list")$name
+  if ("snap" %in% attached) DBI::dbExecute(con, "DETACH DATABASE snap")
+  invisible(NULL)
+}
