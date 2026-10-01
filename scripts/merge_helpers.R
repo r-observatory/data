@@ -135,6 +135,10 @@ source_tables <- list(
   "cran-task-views.db"           = c("cran_task_views", "cran_task_view_events", "cran_task_view_membership")
 )
 
+#' Table names two sources may both bring, as table name -> the sources allowed
+#' to share it. Empty: no two sources carry one table name today.
+allowed_table_overlaps <- list()
+
 #' <table>__<index>, for an index whose own name is taken in the output. Cut to
 #' 64 characters, the most MySQL allows, since the viewer mirrors index names.
 qualified_index_name <- function(tbl, idx) {
@@ -362,20 +366,50 @@ source_failure_detail <- function(stats) {
   gsub("[\t\r\n]+", " ", paste(parts, collapse = "; "))
 }
 
+#' The tables a source DB would copy under its allowlist, read from its own
+#' schema. NULL when the file cannot be read, which merge_source_db then reports.
+source_table_names <- function(src_path, allow) {
+  found <- tryCatch({
+    src <- DBI::dbConnect(RSQLite::SQLite(), src_path)
+    on.exit(DBI::dbDisconnect(src), add = TRUE)
+    DBI::dbGetQuery(src, "SELECT name FROM sqlite_master
+                          WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")$name
+  }, error = function(e) NULL)
+  if (is.null(found) || is.null(allow)) return(found)
+  found[found %in% allow]
+}
+
+#' TRUE when `overlaps` lists every one of `srcs` for this table name.
+overlap_allowed <- function(tbl, srcs, overlaps) {
+  hit <- which(tolower(names(overlaps)) == tolower(tbl))
+  length(hit) > 0 && all(srcs %in% overlaps[[hit[1]]])
+}
+
 #' Merge every source DB in order into the output connection. A source that is
 #' missing is skipped and one that fails is reported, and either way the loop
 #' goes on to the next source.
+#'
+#' No table name may come from two sources. SQLite matches table names without
+#' regard to case, and CREATE TABLE IF NOT EXISTS plus INSERT OR REPLACE would
+#' pour a second source's rows into the first one's table. The first source to
+#' bring a name keeps it; a later one is refused that table and so does not
+#' merge whole, unless `overlaps` lists both sources for the name.
 #'
 #' @param con         output connection.
 #' @param sources_dir directory the source DBs were downloaded into.
 #' @param dbs         source DB file names, in merge order.
 #' @param tables      per-source allowlists, shaped like source_tables.
+#' @param overlaps    table name -> sources allowed to share it, shaped like
+#'   allowed_table_overlaps.
 #' @return named list keyed by source file: status "merged", "skipped" or
 #'   "error". A source that copied carries file_size, tables (rows per table),
-#'   failed_tables and indexes, and is "error" when any table or index failed.
-#'   One that failed outright carries only the reason.
-merge_sources <- function(con, sources_dir, dbs = source_dbs, tables = source_tables) {
+#'   failed_tables and indexes, and is "error" when any table or index failed
+#'   or a table was refused. One that failed outright carries only the reason.
+merge_sources <- function(con, sources_dir, dbs = source_dbs, tables = source_tables,
+                          overlaps = allowed_table_overlaps) {
   merge_stats <- list()
+  # Lower-cased table name -> the source that brought it and its spelling there.
+  taken <- list()
 
   for (db_file in dbs) {
     src_path <- file.path(sources_dir, db_file)
@@ -393,14 +427,30 @@ merge_sources <- function(con, sources_dir, dbs = source_dbs, tables = source_ta
     file_size <- file.info(src_path)$size
     cat("  File size:", format(file_size, big.mark = ","), "bytes\n")
 
+    allow <- tables_to_merge_from(db_file, tables)
+    brings <- source_table_names(src_path, allow)
+    refused <- character()
+    for (tbl in brings) {
+      owner <- taken[[tolower(tbl)]]
+      if (is.null(owner)) {
+        taken[[tolower(tbl)]] <- list(source = db_file, name = tbl)
+      } else if (!overlap_allowed(tbl, c(owner$source, db_file), overlaps)) {
+        refused[[tbl]] <- sprintf("not copied, %s already brought a table named %s",
+                                  owner$source, owner$name)
+        cat("  Table:", tbl, "->", refused[[tbl]], "\n")
+      }
+    }
+    if (length(refused)) allow <- setdiff(brings, names(refused))
+
     merge_stats[[db_file]] <- tryCatch({
-      res <- merge_source_db(con, src_path, tables_to_merge_from(db_file, tables))
-      whole <- !length(res$failed) && !any(res$indexes$outcome == "failed")
+      res <- merge_source_db(con, src_path, allow)
+      failed <- c(res$failed, refused)
+      whole <- !length(failed) && !any(res$indexes$outcome == "failed")
       list(
         status = if (whole) "merged" else "error",
         file_size = file_size,
         tables = res$tables,
-        failed_tables = res$failed,
+        failed_tables = failed,
         indexes = res$indexes
       )
     }, error = function(e) {

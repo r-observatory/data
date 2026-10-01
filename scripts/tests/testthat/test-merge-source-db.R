@@ -400,11 +400,10 @@ test_that("a table whose rows fail partway leaves nothing behind, not even the t
   expect_true(all(grepl("failed", vro$note)))
 })
 
-test_that("a source with one failed table is still an error, and the sources after it merge", {
+test_that("a source refused a table is still an error, and the sources after it merge", {
   dir <- withr::local_tempdir()
-  # queue.db merges every table it has. One named like a vcs table but with
-  # other columns makes the vcs copy fail partway, the source just before the
-  # task views.
+  # queue.db merges every table it has and comes before vcs-signals, so it
+  # brings repo_package_links first and the vcs table of that name is refused.
   write_db(file.path(dir, "queue.db"), "CREATE TABLE repo_package_links (repo_id TEXT)")
   write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE,
                     with_added = TRUE)
@@ -413,7 +412,7 @@ test_that("a source with one failed table is still an error, and the sources aft
   withr::defer(DBI::dbDisconnect(con))
 
   expect_warning(stats <- quiet_merge_sources(con, dir),
-                 "Error processing vcs-signals-summary.db.*repo_package_links")
+                 "Error processing vcs-signals-summary.db.*repo_package_links.*queue.db")
 
   status <- vapply(stats, function(s) s$status, character(1))
   expect_equal(status[c("queue.db", "vcs-signals-summary.db", "cran-task-views.db")],
@@ -421,6 +420,11 @@ test_that("a source with one failed table is still an error, and the sources aft
                  "cran-task-views.db" = "merged"))
   vcs <- stats[["vcs-signals-summary.db"]]
   expect_named(vcs$failed_tables, "repo_package_links")
+  expect_equal(vcs$failed_tables[["repo_package_links"]],
+               "not copied, queue.db already brought a table named repo_package_links")
+  # queue.db's table is left as it came, with none of the vcs rows in it.
+  expect_equal(DBI::dbGetQuery(con, "PRAGMA main.table_info(repo_package_links)")$name, "repo_id")
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) AS n FROM repo_package_links")$n, 0)
   # Every other allowlisted vcs table still lands.
   expect_setequal(names(vcs$tables), c("vcs_signals_summary", vcs_added_tables))
   expect_true(all(c("vcs_signals_summary", vcs_added_tables) %in% output_tables(con)))
@@ -446,8 +450,8 @@ test_that("the sources that did not merge whole are named with what failed", {
   failures <- merge_failures(stats)
 
   expect_named(failures, c("cran-archive.db", "vcs-signals-summary.db"), ignore.order = TRUE)
-  expect_match(failures[["vcs-signals-summary.db"]],
-               "repo_package_links.*no column named package")
+  expect_equal(failures[["vcs-signals-summary.db"]],
+               "table repo_package_links: not copied, queue.db already brought a table named repo_package_links")
   expect_match(failures[["cran-archive.db"]], "nothing merged")
   expect_false(any(grepl("[\t\n]", failures)))
 })
@@ -1008,4 +1012,110 @@ test_that("metadata.db brings the bounce episodes and flavor history with their 
   info <- DBI::dbGetQuery(con, "PRAGMA main.table_info(cran_check_flavor_status_history)")
   key <- info[info$pk > 0, , drop = FALSE]
   expect_equal(key$name[order(key$pk)], c("package", "flavor_id", "episode_seq"))
+})
+
+test_that("a table name is matched across sources without regard to case", {
+  dir <- withr::local_tempdir()
+  # The vcs columns under a name that differs only in case. SQLite treats the
+  # two as one table, so without the guard the vcs rows would join these.
+  write_db(file.path(dir, "queue.db"), c(
+    "CREATE TABLE Repo_Package_Links (repo_id TEXT NOT NULL, package TEXT NOT NULL,
+       origin TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+       PRIMARY KEY (repo_id, package, origin))",
+    "INSERT INTO Repo_Package_Links VALUES
+       ('github.com/q/qpkg', 'qpkg', 'cran', '2026-10-01', '2026-10-01')"))
+  write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE)
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  expect_warning(stats <- quiet_merge_sources(con, dir),
+                 "Error processing vcs-signals-summary.db")
+
+  expect_equal(stats[["queue.db"]]$status, "merged")
+  vcs <- stats[["vcs-signals-summary.db"]]
+  expect_equal(vcs$status, "error")
+  expect_equal(vcs$failed_tables[["repo_package_links"]],
+               "not copied, queue.db already brought a table named Repo_Package_Links")
+  expect_equal(DBI::dbGetQuery(con, "SELECT package FROM repo_package_links")$package, "qpkg")
+  expect_equal(vcs$tables$vcs_signals_summary, 2)
+})
+
+test_that("a refused table reddens the run through the gate and still publishes", {
+  source(file.path(getwd(), "..", "..", "merge_gate.R"), local = TRUE)
+  dir <- withr::local_tempdir()
+  write_db(file.path(dir, "queue.db"), "CREATE TABLE repo_package_links (repo_id TEXT)")
+  write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE)
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+  stats <- suppressWarnings(quiet_merge_sources(con, dir))
+  # merge.R and check-freshness.R pass the failures through this file.
+  path <- file.path(dir, ".merge-failed")
+  write_merge_failures(path, merge_failures(stats))
+
+  dbs <- c("queue.db", "vcs-signals-summary.db")
+  res <- evaluate_freshness_gate(
+    meta = data.frame(pipeline = c("cran-queue", "vcs-signals"),
+                      last_checked = "2026-10-01T09:00:00Z", last_changed = NA_character_,
+                      released_at = NA_character_, expected_max_age_hours = c(3L, 30L)),
+    present_dbs = dbs, all_source_dbs = dbs,
+    config = list(list(name = "cran-queue", max_age_h = 3L, db_filename = "queue.db"),
+                  list(name = "vcs-signals", max_age_h = 30L,
+                       db_filename = "vcs-signals-summary.db")),
+    now_iso = "2026-10-01T10:00:00Z", output_bytes = NA_real_,
+    merge_failed = read_merge_failures(path))
+
+  verdict <- stats::setNames(res$rows$verdict, res$rows$source)
+  expect_equal(verdict[["queue.db"]], "ok")
+  expect_equal(verdict[["vcs-signals-summary.db"]], "merge error")
+  expect_match(res$rows$detail[res$rows$source == "vcs-signals-summary.db"],
+               "queue.db already brought a table named repo_package_links", fixed = TRUE)
+  expect_true(res$run_failed)
+  expect_true(res$publish_allowed)
+})
+
+test_that("only an overlap listed for both sources lets them share a table name", {
+  dir <- withr::local_tempdir()
+  for (src in c("a", "b", "c")) {
+    write_db(file.path(dir, paste0(src, ".db")), c(
+      "CREATE TABLE shared_names (name TEXT PRIMARY KEY)",
+      sprintf("INSERT INTO shared_names VALUES ('from %s')", src)))
+  }
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  stats <- NULL
+  expect_warning(
+    utils::capture.output(stats <- merge_sources(
+      con, dir, dbs = c("a.db", "b.db", "c.db"),
+      tables = list("a.db" = NULL, "b.db" = NULL, "c.db" = NULL),
+      overlaps = list(Shared_Names = c("a.db", "b.db")))),
+    "Error processing c.db: table shared_names: not copied, a.db already brought")
+
+  expect_equal(vapply(stats, function(s) s$status, character(1)),
+               c(a.db = "merged", b.db = "merged", c.db = "error"))
+  expect_setequal(DBI::dbGetQuery(con, "SELECT name FROM shared_names")$name,
+                  c("from a", "from b"))
+})
+
+test_that("a table that fails to copy inside the source loop is still an error", {
+  dir <- withr::local_tempdir()
+  src <- write_vcs_summary(file.path(dir, "vcs-signals-summary.db"), with_links = TRUE,
+                           with_added = TRUE)
+  # A row the owner-type check refuses, so vcs_repo_owner fails partway.
+  write_db(src, c("PRAGMA ignore_check_constraints = 1",
+                  "INSERT INTO vcs_repo_owner VALUES
+                     ('github.com/x/y', 'R_x', 'x', 'Bot', 'O_x', 'x/y', '2026-10-04')"))
+  write_task_views(file.path(dir, "cran-task-views.db"))
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  expect_warning(stats <- quiet_merge_sources(con, dir),
+                 "Error processing vcs-signals-summary.db.*vcs_repo_owner.*CHECK constraint failed")
+
+  vcs <- stats[["vcs-signals-summary.db"]]
+  expect_equal(vcs$status, "error")
+  expect_named(vcs$failed_tables, "vcs_repo_owner")
+  expect_match(merge_failures(stats)[["vcs-signals-summary.db"]],
+               "table vcs_repo_owner: .*CHECK constraint failed")
+  expect_equal(stats[["cran-task-views.db"]]$status, "merged")
 })

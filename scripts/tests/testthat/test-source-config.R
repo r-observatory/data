@@ -199,3 +199,9 @@ test_that("feed.db, metadata.db and queue.db stay whole sources", {
     expect_null(tables_to_merge_from(src, source_tables), info = src)
   }
 })
+
+test_that("no two sources are allowed to share a table name today", {
+  # v2026-09-30 carries 82 source tables and no name twice. A new overlap is a
+  # decision written into allowed_table_overlaps, never a surprise.
+  expect_equal(allowed_table_overlaps, list())
+})
