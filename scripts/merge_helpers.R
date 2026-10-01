@@ -66,6 +66,8 @@ source_dbs <- c(
 
 source_tables <- list(
   "feed.db"                      = NULL,
+  # Whole source. Its state tables include check_status_history, cran_check_deadlines,
+  # cran_maintainer_bounces, cran_check_flavors and cran_check_flavor_status_history.
   "metadata.db"                  = NULL,
   "downloads-summary.db"         = c("downloads_summary"),
   "r2u-summary.db"               = c("r2u_downloads_summary"),
@@ -77,6 +79,8 @@ source_tables <- list(
   "bioconda-downloads-summary.db"    = c("bioconda_downloads_summary"),
   "c2d4u-downloads-summary.db"    = c("c2d4u_downloads_summary"),
   "bioconductor-summary.db"      = c("bioc_downloads_summary"),
+  # Whole source, including queue_archive_episodes and queue_archive_reads (the
+  # daily read of CRAN's incoming/archive folder).
   "queue.db"                     = NULL,
   # bioc_vignettes is the current release's vignette list, one row per file with its link.
   # bioc_build_reports, bioc_build_status_history and bioc_views_history are the daily

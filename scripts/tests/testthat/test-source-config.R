@@ -189,3 +189,13 @@ test_that("autoobs brings its run record and leaves the raw counters behind", {
   expect_equal(allow, c("autoobs_downloads_summary", "autoobs_runs"))
   expect_false(any(c("autoobs_counters", "autoobs_days") %in% allow))
 })
+
+test_that("feed.db, metadata.db and queue.db stay whole sources", {
+  # Every table they publish is merged, so a new producer table such as
+  # queue_archive_episodes or cran_maintainer_bounces arrives with no edit
+  # here. An allowlist on one of them would drop whatever it forgot to name.
+  for (src in c("feed.db", "metadata.db", "queue.db")) {
+    expect_true(src %in% names(source_tables), info = src)
+    expect_null(tables_to_merge_from(src, source_tables), info = src)
+  }
+})

@@ -118,6 +118,8 @@ dbGetQuery(con, "
 - **check_status_history** — Append-only status change log (package, status, flavor_summary, details, detected_at)
 - **removal_reasons** — Archival reasons for removed packages (package, reason)
 - **package_news** — NEWS entries for recently-updated packages (package, version, news_text)
+- **cran_maintainer_bounces**: Episodes of CRAN's email to a package's maintainer bouncing (package, episode_seq, version, onset_known, first_seen, last_seen, resolved_on, outcome, archived_on). `onset_known = 0` marks an episode already open when recording began.
+- **cran_check_flavors**, **cran_check_flavor_status_history**: Each CRAN check flavor, and each package's check status and flags per flavor as episodes, with the checked version kept alongside.
 
 ### From `downloads.db` (cran-downloads)
 
@@ -145,6 +147,8 @@ dbGetQuery(con, "
 
 - **queue_snapshots** — Point-in-time snapshots of CRAN incoming queue (snapshot_time, package, version, folder, howlong)
 - **queue_stats** — Monthly queue statistics by folder (month, folder, median_hours, p80_hours, p95_hours, total_packages)
+- **queue_archive_episodes**: Tarballs seen in CRAN's `incoming/archive/` folder, read once a day (package, version, mtime on CRAN's Europe/Vienna clock, size_kb, first_seen and last_seen in UTC). A `first_seen` equal to the earliest read is censored.
+- **queue_archive_reads**: Each daily read of that folder and how many tarballs it listed, so a file that left the folder can be told from a day that was not read.
 
 ### Generated at merge time
 
