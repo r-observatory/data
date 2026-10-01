@@ -729,3 +729,37 @@ test_that("columns vcs-signals adds with ALTER TABLE arrive with their tables", 
   got <- DBI::dbGetQuery(con, "SELECT authored_measured_on, assisted_measured_on FROM vcs_ai_signals")
   expect_equal(unlist(got), c(authored_measured_on = "2026-10-04", assisted_measured_on = "2026-10-05"))
 })
+
+test_that("the autoobs run record lands and the counters and day ledger stay behind", {
+  dir <- withr::local_tempdir()
+  write_db(file.path(dir, "autoobs-downloads-summary.db"), c(
+    "CREATE TABLE autoobs_downloads_summary (package TEXT PRIMARY KEY, total_30d INTEGER)",
+    "INSERT INTO autoobs_downloads_summary VALUES ('Rcpp', 812)",
+    "CREATE TABLE autoobs_runs (run_id INTEGER PRIMARY KEY, run_at TEXT,
+       snapshot_date TEXT NOT NULL, source TEXT NOT NULL, outcome TEXT NOT NULL,
+       reason TEXT, day_aggregated INTEGER, window_end TEXT,
+       counters_prior TEXT, counters_published INTEGER)",
+    "INSERT INTO autoobs_runs VALUES
+       (1790741529, '2026-09-30T04:12:09Z', '2026-09-30', 'run', 'ok', NULL, 1,
+        '2026-09-29', 'loaded', 1),
+       (1790827841, '2026-10-01T04:10:41Z', '2026-10-01', 'run', 'heartbeat',
+        'no stats', 0, '2026-09-29', 'download_failed', 0)",
+    "CREATE TABLE autoobs_counters (run_id INTEGER NOT NULL, package TEXT NOT NULL,
+       cnt_today INTEGER, cnt_1d INTEGER, cnt_7d INTEGER, cnt_30d INTEGER,
+       cnt_total INTEGER, PRIMARY KEY (run_id, package)) WITHOUT ROWID",
+    "INSERT INTO autoobs_counters VALUES (1790741529, 'Rcpp', 3, 27, 190, 812, 0)",
+    "CREATE TABLE autoobs_days (date TEXT PRIMARY KEY, method TEXT NOT NULL,
+       run_id INTEGER, packages INTEGER, downloads INTEGER)",
+    "INSERT INTO autoobs_days VALUES ('2026-09-29', 'cnt_1d', 1790741529, 5210, 40112)"))
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  stats <- quiet_merge_sources(con, dir)[["autoobs-downloads-summary.db"]]
+
+  expect_equal(stats$status, "merged")
+  expect_equal(stats$tables$autoobs_runs, 2)
+  got <- DBI::dbGetQuery(con, "SELECT outcome, counters_prior FROM autoobs_runs ORDER BY run_id")
+  expect_equal(got$outcome, c("ok", "heartbeat"))
+  expect_equal(got$counters_prior, c("loaded", "download_failed"))
+  expect_false(any(c("autoobs_counters", "autoobs_days") %in% output_tables(con)))
+})

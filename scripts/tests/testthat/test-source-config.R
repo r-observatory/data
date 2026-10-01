@@ -179,3 +179,11 @@ test_that("the Bioconductor catalogue carries its vignette list", {
       "bioc_names_all", "bioc_vignettes")
   )
 })
+
+test_that("autoobs brings its run record and leaves the raw counters behind", {
+  # The run record tells an unaggregated day from a zero. The counters and the
+  # day ledger stay in the pipeline's own assets.
+  allow <- tables_to_merge_from("autoobs-downloads-summary.db", source_tables)
+  expect_equal(allow, c("autoobs_downloads_summary", "autoobs_runs"))
+  expect_false(any(c("autoobs_counters", "autoobs_days") %in% allow))
+})

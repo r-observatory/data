@@ -69,7 +69,9 @@ source_tables <- list(
   "metadata.db"                  = NULL,
   "downloads-summary.db"         = c("downloads_summary"),
   "r2u-summary.db"               = c("r2u_downloads_summary"),
-  "autoobs-downloads-summary.db" = c("autoobs_downloads_summary"),
+  # autoobs_runs tells a day MirrorCache had not aggregated from a zero. The raw
+  # counters and the day ledger stay in the pipeline's own assets.
+  "autoobs-downloads-summary.db" = c("autoobs_downloads_summary", "autoobs_runs"),
   "copr-downloads-summary.db"    = c("copr_downloads_summary"),
   "conda-forge-downloads-summary.db" = c("conda_forge_downloads_summary"),
   "bioconda-downloads-summary.db"    = c("bioconda_downloads_summary"),
