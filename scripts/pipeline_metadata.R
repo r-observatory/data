@@ -79,6 +79,9 @@ pipeline_config <- function() {
     list(name = "cran-task-views", repo = "r-observatory/cran-task-views",
          schedule = "daily 06:00 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE,
          db_filename = "cran-task-views.db"),
+    list(name = "osv-advisories", repo = "r-observatory/osv-advisories",
+         schedule = "daily 06:00 UTC", max_age_h = 30L,   rolling = TRUE,  manifest = TRUE,
+         db_filename = "osv-advisories.db"),
     # Metrics pipelines ship a metrics-style manifest (code-manifest.json) that
     # carries bootstrap.bootstrap_complete, and publish to a dated `metrics-*`
     # release marked latest (not a rolling `current` tag). Each also ships a

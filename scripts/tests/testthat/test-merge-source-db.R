@@ -1119,3 +1119,29 @@ test_that("a table that fails to copy inside the source loop is still an error",
                "table vcs_repo_owner: .*CHECK constraint failed")
   expect_equal(stats[["cran-task-views.db"]]$status, "merged")
 })
+
+test_that("osv-advisories merges its six tables and nothing else", {
+  dir <- withr::local_tempdir()
+  write_db(file.path(dir, "osv-advisories.db"), c(
+    "CREATE TABLE advisories (id TEXT PRIMARY KEY, ecosystem TEXT NOT NULL, in_osv INTEGER NOT NULL)",
+    "CREATE TABLE advisory_ranges (advisory_id TEXT NOT NULL, package TEXT NOT NULL, fixed TEXT)",
+    "CREATE TABLE advisory_affected_versions (advisory_id TEXT NOT NULL, package TEXT NOT NULL,
+       version TEXT NOT NULL, in_tarballs INTEGER NOT NULL, PRIMARY KEY (advisory_id, package, version))",
+    "CREATE INDEX idx_aav_package ON advisory_affected_versions (package, version)",
+    "CREATE TABLE advisory_upstream (advisory_id TEXT NOT NULL, upstream_id TEXT NOT NULL, rating TEXT)",
+    "CREATE TABLE advisory_history (advisory_id TEXT NOT NULL, modified TEXT NOT NULL, first_seen TEXT NOT NULL)",
+    "CREATE TABLE advisory_meta (key TEXT PRIMARY KEY, value TEXT)",
+    "CREATE TABLE scratch_notes (x TEXT)",
+    "INSERT INTO advisories VALUES ('RSEC-2026-0', 'CRAN', 1)",
+    "INSERT INTO advisory_affected_versions VALUES ('RSEC-2026-0', 'widgetframe', '0.3.1', 1)"))
+  write_task_views(file.path(dir, "cran-task-views.db"))
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+  stats <- quiet_merge_sources(con, dir)
+  expect_equal(stats[["osv-advisories.db"]]$status, "merged")
+  tabs <- DBI::dbListTables(con)
+  expect_true(all(c("advisories", "advisory_ranges", "advisory_affected_versions", "advisory_upstream",
+                    "advisory_history", "advisory_meta") %in% tabs))
+  expect_false("scratch_notes" %in% tabs)
+  expect_equal(DBI::dbGetQuery(con, "SELECT version FROM advisory_affected_versions")$version, "0.3.1")
+})
