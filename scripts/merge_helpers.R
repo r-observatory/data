@@ -62,7 +62,7 @@ source_dbs <- c(
   "bioc-data-metrics.db",
   "cran-coverage.db",
   "vcs-signals-summary.db",
-  # Kept ahead of cran-task-views, which merge.R expects to merge last.
+  # Kept ahead of cran-task-views, which has always merged last.
   "osv-advisories.db",
   "cran-task-views.db"
 )
