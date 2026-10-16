@@ -134,6 +134,26 @@ test_that("cran-task-views is registered in both merger lists", {
   )
 })
 
+test_that("osv-advisories is registered in both merger lists, ahead of cran-task-views", {
+  expect_true("osv-advisories.db" %in% source_dbs)
+  expect_lt(match("osv-advisories.db", source_dbs), match("cran-task-views.db", source_dbs))
+  expect_equal(tail(source_dbs, 1), "cran-task-views.db")
+  expect_equal(
+    tables_to_merge_from("osv-advisories.db", source_tables),
+    c("advisories", "advisory_ranges", "advisory_affected_versions",
+      "advisory_upstream", "advisory_history", "advisory_meta")
+  )
+})
+
+test_that("the merge workflow downloads osv-advisories from its current release", {
+  yml <- readLines(file.path(getwd(), "..", "..", "..", ".github", "workflows", "merge.yml"))
+  expect_true(any(grepl("repo_db_map[osv-advisories]=osv-advisories.db", yml, fixed = TRUE)))
+  loop <- grep("^\\s*for repo in ", yml, value = TRUE)
+  expect_true(any(grepl(" osv-advisories ", loop, fixed = TRUE)))
+  rolling <- grep("|cran-task-views)", yml, value = TRUE, fixed = TRUE)
+  expect_true(any(grepl("|osv-advisories|", rolling, fixed = TRUE)))
+})
+
 test_that("the merge workflow downloads cran-task-views", {
   yml <- readLines(file.path(getwd(), "..", "..", "..",
                              ".github", "workflows", "merge.yml"))

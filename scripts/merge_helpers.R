@@ -62,6 +62,8 @@ source_dbs <- c(
   "bioc-data-metrics.db",
   "cran-coverage.db",
   "vcs-signals-summary.db",
+  # Kept ahead of cran-task-views, which merge.R expects to merge last.
+  "osv-advisories.db",
   "cran-task-views.db"
 )
 
@@ -134,6 +136,9 @@ source_tables <- list(
                                      # repository's counts cover, and dated renames and transfers.
                                      # The walk cursor in vcs_ai_repo_reads stays out.
                                      "vcs_pr_quarterly", "vcs_pr_coverage", "vcs_repo_name_history"),
+  # Security advisories from OSV, with the versions each affects and its change history.
+  "osv-advisories.db"            = c("advisories", "advisory_ranges", "advisory_affected_versions",
+                                     "advisory_upstream", "advisory_history", "advisory_meta"),
   "cran-task-views.db"           = c("cran_task_views", "cran_task_view_events", "cran_task_view_membership")
 )
 
