@@ -30,7 +30,7 @@ test_that("code-metrics DBs expose summary, api_history and detail tables", {
   )
   expect_equal(
     tables_to_merge_from("bioc-code-metrics.db", source_tables),
-    c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges", "bioc_code_churn", "bioc_description_fields", "bioc_release_notes")
+    c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges", "bioc_code_churn", "bioc_description_fields", "bioc_release_notes", "bioc_release_versions")
   )
 })
 
@@ -48,8 +48,10 @@ test_that("code-metrics DBs carry code tables (plus cran archived metadata) afte
   )
   expect_equal(
     tables_to_merge_from("bioc-code-metrics.db", source_tables),
-    c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges", "bioc_code_churn", "bioc_description_fields", "bioc_release_notes")
+    c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges", "bioc_code_churn", "bioc_description_fields", "bioc_release_notes", "bioc_release_versions")
   )
+  expect_false(any(c("bioc_description_history", "bioc_release_notes_history", "bioc_release_text_versions") %in%
+                   tables_to_merge_from("bioc-code-metrics.db", source_tables)))
 })
 
 test_that("data-metrics DBs are registered and carry only dataset tables", {
