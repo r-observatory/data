@@ -104,9 +104,10 @@ source_tables <- list(
   # can name the vignettes only with it.
   # *_description_fields and *_release_notes hold the latest analysed version only. The
   # per-version history stays with each pipeline (cran-release-text.db, bioc-code-metrics.db).
+  # bioc_release_versions is the one exception: each Bioconductor release's package version.
   "cran-code-metrics.db"         = c("cran_code_summary", "cran_api_history", "cran_functions", "cran_call_edges", "cran_code_churn", "cran_archived_meta", "cran_author_package_span", "cran_vignettes", "cran_description_fields", "cran_release_notes"),
   "cran-data-metrics.db"         = c("cran_datasets", "cran_dataset_versions", "cran_dataset_contents"),
-  "bioc-code-metrics.db"         = c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges", "bioc_code_churn", "bioc_description_fields", "bioc_release_notes"),
+  "bioc-code-metrics.db"         = c("bioc_code_summary", "bioc_api_history", "bioc_functions", "bioc_call_edges", "bioc_code_churn", "bioc_description_fields", "bioc_release_notes", "bioc_release_versions"),
   "bioc-data-metrics.db"         = c("bioc_datasets", "bioc_dataset_versions", "bioc_dataset_contents"),
   "cran-coverage.db"             = c("coverage_summary", "coverage_file", "coverage_function"),
   # vcs_ai_models is one row per repo per tool per model; vcs_ai_rule_inventory
