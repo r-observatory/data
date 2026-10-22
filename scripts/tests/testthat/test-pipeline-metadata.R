@@ -397,7 +397,8 @@ test_that("pipeline_config includes the newly-folded-in sources with the merge's
     "cran-archive"           = "cran-archive.db",
     "cran-coverage"          = "cran-coverage.db",
     "cran-task-views"        = "cran-task-views.db",
-    "osv-advisories"         = "osv-advisories.db")
+    "osv-advisories"         = "osv-advisories.db",
+    "cran-subjects"          = "cran-subjects.db")
   for (nm in names(expected)) {
     expect_true(nm %in% names(by_name), info = nm)
     entry <- by_name[[nm]]

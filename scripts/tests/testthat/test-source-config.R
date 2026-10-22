@@ -156,6 +156,26 @@ test_that("the merge workflow downloads osv-advisories from its current release"
   expect_true(any(grepl("|osv-advisories|", rolling, fixed = TRUE)))
 })
 
+test_that("cran-subjects is registered in both merger lists, ahead of cran-task-views", {
+  expect_true("cran-subjects.db" %in% source_dbs)
+  expect_lt(match("cran-subjects.db", source_dbs), match("cran-task-views.db", source_dbs))
+  expect_equal(tail(source_dbs, 1), "cran-task-views.db")
+  expect_equal(
+    tables_to_merge_from("cran-subjects.db", source_tables),
+    c("subjects", "subject_members", "subject_task_views",
+      "collections", "collection_members", "collection_mentions")
+  )
+})
+
+test_that("the merge workflow downloads cran-subjects from its current release", {
+  yml <- readLines(file.path(getwd(), "..", "..", "..", ".github", "workflows", "merge.yml"))
+  expect_true(any(grepl("repo_db_map[cran-subjects]=cran-subjects.db", yml, fixed = TRUE)))
+  loop <- grep("^\\s*for repo in ", yml, value = TRUE)
+  expect_true(any(grepl(" cran-subjects ", loop, fixed = TRUE)))
+  rolling <- grep("|cran-task-views)", yml, value = TRUE, fixed = TRUE)
+  expect_true(any(grepl("|cran-subjects|", rolling, fixed = TRUE)))
+})
+
 test_that("the merge workflow downloads cran-task-views", {
   yml <- readLines(file.path(getwd(), "..", "..", "..",
                              ".github", "workflows", "merge.yml"))

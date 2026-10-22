@@ -64,6 +64,7 @@ source_dbs <- c(
   "vcs-signals-summary.db",
   # Kept ahead of cran-task-views, which has always merged last.
   "osv-advisories.db",
+  "cran-subjects.db",
   "cran-task-views.db"
 )
 
@@ -142,6 +143,10 @@ source_tables <- list(
   # Security advisories from OSV, with the versions each affects and its change history.
   "osv-advisories.db"            = c("advisories", "advisory_ranges", "advisory_affected_versions",
                                      "advisory_upstream", "advisory_history", "advisory_meta"),
+  # Subjects found among CRAN packages and the community collections, with their members.
+  # The pipeline's own state (pipeline_runs, weekly_clusters, seen_packages, subject_name_basis) stays out.
+  "cran-subjects.db"             = c("subjects", "subject_members", "subject_task_views",
+                                     "collections", "collection_members", "collection_mentions"),
   "cran-task-views.db"           = c("cran_task_views", "cran_task_view_events", "cran_task_view_membership")
 )
 
