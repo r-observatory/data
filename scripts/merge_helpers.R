@@ -89,8 +89,10 @@ source_tables <- list(
   # bioc_vignettes is the current release's vignette list, one row per file with its link.
   # bioc_build_reports, bioc_build_status_history and bioc_views_history are the daily
   # build report and VIEWS read as episodes; upstream keeps only the latest report.
+  # bioc_package_checksums is each release's package version and MD5sum from its PACKAGES files.
   "bioconductor-metadata.db"     = c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges", "bioc_names_all", "bioc_vignettes",
-                                     "bioc_build_reports", "bioc_build_status_history", "bioc_views_history"),
+                                     "bioc_build_reports", "bioc_build_status_history", "bioc_views_history",
+                                     "bioc_package_checksums"),
   # cran_tarballs is one row per CRAN source tarball file with its exact size and
   # mtime, so a same-version re-upload is its own revision. The MD5 is filled only
   # for a file seen while it was current.
