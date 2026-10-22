@@ -195,12 +195,13 @@ test_that("the per-version DESCRIPTION and release notes history stays in the pi
   expect_false("cran-release-text.db" %in% source_dbs)
 })
 
-test_that("the Bioconductor catalogue carries its vignette list and build and VIEWS episodes", {
+test_that("the Bioconductor catalogue carries its vignette list, build and VIEWS episodes and package checksums", {
   expect_equal(
     tables_to_merge_from("bioconductor-metadata.db", source_tables),
     c("bioc_packages", "bioc_authors", "bioc_releases", "bioc_view_edges",
       "bioc_names_all", "bioc_vignettes",
-      "bioc_build_reports", "bioc_build_status_history", "bioc_views_history")
+      "bioc_build_reports", "bioc_build_status_history", "bioc_views_history",
+      "bioc_package_checksums")
   )
 })
 

@@ -703,7 +703,8 @@ test_that("code-metrics and catalogue DBs published before these tables still me
   expect_equal(stats[["bioconductor-metadata.db"]]$status, "merged")
   expect_equal(stats[["bioc-code-metrics.db"]]$tables$bioc_code_summary, 1)
   expect_equal(stats[["bioconductor-metadata.db"]]$tables$bioc_packages, 2)
-  expect_false(any(c("bioc_description_fields", "bioc_release_notes", "bioc_vignettes")
+  expect_false(any(c("bioc_description_fields", "bioc_release_notes", "bioc_vignettes",
+                     "bioc_package_checksums")
                    %in% output_tables(con)))
 })
 
@@ -869,6 +870,36 @@ test_that("the Bioconductor build and VIEWS episodes land with their open-row in
   expect_equal(DBI::dbGetQuery(con, "SELECT value FROM bioc_views_history
                                      WHERE package = 'airway' AND ended_on IS NULL")$value,
                "Deprecated")
+})
+
+test_that("the Bioconductor package checksums land keyed by release, repository and package", {
+  dir <- withr::local_tempdir()
+  src <- write_bioc_catalogue(file.path(dir, "bioconductor-metadata.db"), with_vignettes = FALSE)
+  # As bioconductor-metadata declares it. DESeq2 is in two releases.
+  write_db(src, c(
+    "CREATE TABLE bioc_package_checksums (
+       release TEXT NOT NULL, repository TEXT NOT NULL, package TEXT NOT NULL,
+       version TEXT NOT NULL, md5sum TEXT NOT NULL,
+       PRIMARY KEY (release, repository, package))",
+    "INSERT INTO bioc_package_checksums VALUES
+       ('3.22', 'bioc', 'DESeq2', '1.50.2', '0a1b2c3d4e5f60718293a4b5c6d7e8f9'),
+       ('3.23', 'bioc', 'DESeq2', '1.52.1', '1b2c3d4e5f60718293a4b5c6d7e8f90a'),
+       ('3.23', 'data/experiment', 'airway', '1.30.0', '2c3d4e5f60718293a4b5c6d7e8f90a1b')"))
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+
+  stats <- quiet_merge_sources(con, dir)[["bioconductor-metadata.db"]]
+
+  expect_equal(stats$status, "merged")
+  expect_equal(stats$tables$bioc_package_checksums, 3)
+  info <- DBI::dbGetQuery(con, "PRAGMA main.table_info(bioc_package_checksums)")
+  key <- info[info$pk > 0, , drop = FALSE]
+  expect_equal(key$name[order(key$pk)], c("release", "repository", "package"))
+  expect_equal(DBI::dbGetQuery(con, "SELECT md5sum FROM bioc_package_checksums
+                                     WHERE release = '3.23' AND package = 'DESeq2'")$md5sum,
+               "1b2c3d4e5f60718293a4b5c6d7e8f90a")
+  expect_error(DBI::dbExecute(con, "INSERT INTO bioc_package_checksums VALUES
+    ('3.23', 'bioc', 'DESeq2', '1.52.2', '3d4e5f60718293a4b5c6d7e8f90a1b2c')"), "UNIQUE")
 })
 
 test_that("the CRAN tarball table lands keyed by revision, WITHOUT ROWID and with its check", {
