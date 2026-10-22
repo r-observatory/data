@@ -1145,3 +1145,30 @@ test_that("osv-advisories merges its six tables and nothing else", {
   expect_false("scratch_notes" %in% tabs)
   expect_equal(DBI::dbGetQuery(con, "SELECT version FROM advisory_affected_versions")$version, "0.3.1")
 })
+
+test_that("cran-subjects merges its six page tables and leaves its run state out", {
+  dir <- withr::local_tempdir()
+  write_db(file.path(dir, "cran-subjects.db"), c(
+    "CREATE TABLE subjects (subject_id INTEGER PRIMARY KEY, slug TEXT NOT NULL, name TEXT, status TEXT NOT NULL)",
+    "CREATE TABLE subject_members (subject_id INTEGER NOT NULL, package TEXT NOT NULL, is_primary INTEGER NOT NULL)",
+    "CREATE TABLE subject_task_views (subject_id INTEGER NOT NULL, view TEXT NOT NULL, in_common INTEGER NOT NULL)",
+    "CREATE TABLE collections (collection_id INTEGER PRIMARY KEY, slug TEXT NOT NULL, kind TEXT NOT NULL)",
+    "CREATE TABLE collection_members (collection_id INTEGER NOT NULL, package TEXT NOT NULL, tier TEXT NOT NULL)",
+    "CREATE TABLE collection_mentions (collection_id INTEGER NOT NULL, package TEXT NOT NULL, source TEXT NOT NULL)",
+    "CREATE TABLE subject_name_basis (subject_id INTEGER NOT NULL, phrase TEXT NOT NULL)",
+    "CREATE TABLE seen_packages (package TEXT PRIMARY KEY, first_seen TEXT NOT NULL)",
+    "CREATE TABLE pipeline_runs (run_at TEXT NOT NULL, mode TEXT NOT NULL)",
+    "CREATE TABLE weekly_clusters (package TEXT PRIMARY KEY, cluster INTEGER NOT NULL)",
+    "INSERT INTO subjects VALUES (1, 'time-series-forecasting', 'Time series forecasting', 'judged')",
+    "INSERT INTO collection_members VALUES (1, 'dplyr', 'installed')"))
+  write_task_views(file.path(dir, "cran-task-views.db"))
+  con <- DBI::dbConnect(RSQLite::SQLite(), file.path(dir, "observatory.db"))
+  withr::defer(DBI::dbDisconnect(con))
+  stats <- quiet_merge_sources(con, dir)
+  expect_equal(stats[["cran-subjects.db"]]$status, "merged")
+  tabs <- DBI::dbListTables(con)
+  expect_true(all(c("subjects", "subject_members", "subject_task_views",
+                    "collections", "collection_members", "collection_mentions") %in% tabs))
+  expect_false(any(c("subject_name_basis", "seen_packages", "pipeline_runs", "weekly_clusters") %in% tabs))
+  expect_equal(DBI::dbGetQuery(con, "SELECT slug FROM subjects")$slug, "time-series-forecasting")
+})
