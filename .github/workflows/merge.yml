@@ -565,6 +565,53 @@ jobs:
           declare -A compressed_source
           compressed_source[cran-queue]=1
 
+          # cran-queue publishes this year's snapshots in its hourly release as
+          # queue-current.db.zst, and each closed year once, in its own
+          # history-YYYY release; the manifest beside the current part lists
+          # them. Rebuild the full queue.db here so observatory.db keeps every
+          # year. A part that will not download, verify or insert aborts the
+          # merge, like a torn download: a queue with a year missing would
+          # publish as history that never existed.
+          assemble_queue() {  # $1=tag of the cran-queue release already expanded into sources/queue.db
+            local tag="$1" dir parts ptag passet attempt ok
+            if [ -z "$tag" ]; then
+              tag=$(gh release view --repo r-observatory/cran-queue --json tagName -q .tagName) || tag=""
+            fi
+            if [ -z "$tag" ]; then
+              echo "::error::cran-queue: could not resolve the release whose history parts to assemble. Aborting merge."
+              exit 1
+            fi
+            dir=$(mktemp -d)
+            if ! gh release download "$tag" --repo r-observatory/cran-queue --pattern manifest.json --dir "$dir"; then
+              echo "::error::cran-queue@$tag carries queue-current.db.zst but its manifest.json did not download. Aborting merge."
+              exit 1
+            fi
+            if ! parts=$(jq -r '.parts[] | "\(.tag) \(.asset)"' "$dir/manifest.json"); then
+              echo "::error::cran-queue@$tag's manifest.json lists no readable history parts. Aborting merge."
+              exit 1
+            fi
+            while read -r ptag passet; do
+              [ -n "$ptag" ] || continue
+              ok=""
+              for attempt in 1 2 3; do
+                if gh release download "$ptag" --repo r-observatory/cran-queue --pattern "$passet" --dir "$dir" --clobber; then
+                  ok=yes; break
+                fi
+                [ "$attempt" -lt 3 ] && sleep $((attempt * 2))
+              done
+              if [ -z "$ok" ]; then
+                echo "::error::$passet from cran-queue@$ptag did not download. Aborting merge."
+                exit 1
+              fi
+              verify_size "r-observatory/cran-queue" "$ptag" "$passet" "$dir/$passet"
+            done <<<"$parts"
+            if ! Rscript scripts/assemble_queue.R "sources/queue.db" "$dir/manifest.json" "$dir"; then
+              echo "::error::cran-queue's history parts did not assemble into queue.db. Aborting merge."
+              exit 1
+            fi
+            rm -rf "$dir"
+          }
+
           declare -A repo_db_map
           repo_db_map[cran-queue]=queue.db
           repo_db_map[cran-feed]=feed.db
@@ -602,6 +649,11 @@ jobs:
             if [ -n "${compressed_source[$repo]:-}" ]; then
               dl_pattern="$target*"
               dated_pattern="$target*"
+            fi
+            # cran-queue's yearly releases name the current part
+            # queue-current.db.zst; earlier ones carry queue.db.zst or queue.db.
+            if [ "$repo" = "cran-queue" ]; then
+              dated_pattern="queue*.db*"
             fi
 
             # cran-downloads and r2u-downloads use a rolling "current" tag with
@@ -669,6 +721,9 @@ jobs:
                 fi
                 if zstd -dq -f "$compressed" -o "sources/$target"; then
                   echo "  -> sources/$target ($(stat --format=%s "sources/$target") bytes, from $(basename "$compressed"))"
+                  if [ "$repo" = "cran-queue" ] && [ "$(basename "$compressed")" = "queue-current.db.zst" ]; then
+                    assemble_queue "$dl_tag"
+                  fi
                 else
                   echo "  Warning: could not decompress $(basename "$compressed") from $repo"
                   rm -f "sources/$target"
